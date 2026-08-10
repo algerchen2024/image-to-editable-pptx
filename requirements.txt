@@ -1,5 +1,5 @@
 opencv-python>=4.8
-numpy>=1.24
+numpy>=2.5.1
 pillow>=10
 python-pptx>=1.0
 pytesseract>=0.3.10
