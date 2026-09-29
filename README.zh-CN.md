@@ -123,7 +123,7 @@ python3 -m pip install -r requirements.txt
 安装 Node 依赖：
 
 ```bash
-npm install
+npm ci
 ```
 
 运行环境检查：
@@ -139,6 +139,15 @@ python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
 node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
 ```
 
+辅助编写 PageIR 的工具：
+
+```bash
+python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --out page_ir.json   # 生成文本对象草稿
+python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # 实测颜色
+python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
+```
+
 ## PageIR
 
 编译器读取一种紧凑的、以源像素为坐标系的 JSON 表示。文本、形状、连线与图片资产都需要显式声明；编译器只负责把这些决策转成 PowerPoint 对象。详见 [references/pageir-schema.md](references/pageir-schema.md)。
@@ -147,7 +156,7 @@ node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
 
 本项目优先保证**可编辑性**与**对象级忠实度**，而不是用像素技巧“伪装”高相似度。高质量结果应具备：可见文字正确、页面比例正确、主要结构锚点对齐、简单几何为原生对象，并且不能靠隐藏整页截图来冒充精确还原。
 
-渲染对比工具会生成 `rendered.png`、`diff.png` 与 `metrics.json`。由于不同平台的字体与渲染器可能不同，像素指标更适合作为复核信号，而不是绝对的跨平台硬阈值。
+渲染对比工具会生成 `rendered.png`、`overlay.png`、`heatmap.png`、`diff.png` 与 `metrics.json`；传入 `--page-ir` 时，还会列出差异热点区域及其对应的 PageIR 对象。由于不同平台的字体与渲染器可能不同，像素指标更适合作为复核信号，而不是绝对的跨平台硬阈值。
 
 ## 开发与检查
 

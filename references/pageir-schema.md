@@ -2,14 +2,21 @@
 
 PageIR is the only page-specific construction input. Keep geometry in source pixels so the source image remains the canonical coordinate system.
 
+Schema `1.1` is a backward-compatible superset of `1.0`: every 1.0 file is a valid 1.1 file. The validator accepts both versions.
+
 ## Top level
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
+  "lang": "zh-CN",
+  "title": "Optional deck title",
+  "default_font_face": "Arial",
   "pages": []
 }
 ```
+
+`lang`, `title`, and `default_font_face` are optional (defaults: `zh-CN`, a generic title, `Arial`).
 
 Each page must contain:
 
@@ -23,7 +30,13 @@ Each page must contain:
 }
 ```
 
-All pages in one deck must have the same aspect ratio within 0.1%.
+All pages in one deck must have the same aspect ratio within 0.1%. A page may set its own `lang`.
+
+Landscape pages compile to a 13.333 in wide slide; portrait pages compile to a 7.5 in tall slide. The other side follows the source aspect ratio.
+
+## Colors
+
+Colors are hex strings: `#RRGGBB` or the short form `#RGB`. `#FFF` is the same as `#FFFFFF`.
 
 ## Common object fields
 
@@ -35,7 +48,11 @@ Every object needs a unique `id` and a `type`. Objects with a rectangular extent
 
 Coordinates are source pixels, with origin at the source image's top-left corner.
 
-Optional `z` controls back-to-front order. Lower values render first.
+Optional fields on any object:
+
+- `z`: back-to-front order. Lower values render first; equal values keep file order.
+- `rotation_deg`: clockwise rotation around the bbox centre (not for `line`).
+- `note`: free text for review, ignored by the compiler. `ocr_to_pageir.py` uses it to record OCR confidence.
 
 ## Text
 
@@ -49,15 +66,46 @@ Optional `z` controls back-to-front order. Lower values render first.
     "font_face": "Microsoft YaHei",
     "font_size_pt": 30,
     "bold": true,
+    "italic": false,
+    "underline": false,
     "color": "#111111",
     "align": "left",
     "valign": "top",
-    "margin_pt": 0
+    "margin_pt": 0,
+    "line_spacing_multiple": 1.0,
+    "char_spacing_pt": 0,
+    "wrap": true
   }
 }
 ```
 
-Supported alignments are `left`, `center`, `right`. Supported vertical alignments are `top`, `mid`, `bottom`.
+- Supported alignments are `left`, `center`, `right`. Supported vertical alignments are `top`, `mid`, `bottom`.
+- `margin_pt` is the inner padding on all sides, in points.
+- `line_spacing_multiple` sets line spacing as a multiple of single spacing.
+- `char_spacing_pt` adds letter spacing, in points.
+- `wrap: false` keeps a single-line label on one line whatever the renderer's font metrics. Use it for titles, labels, and badges.
+- Text never shrinks to fit; size the font explicitly.
+- `\n` inside `text` starts a new paragraph.
+
+### Mixed styles in one text box (`runs`)
+
+Use `runs` instead of `text` when one line mixes weight, color, size, or font:
+
+```json
+{
+  "id": "headline",
+  "type": "text",
+  "bbox": [54, 36, 1150, 60],
+  "runs": [
+    { "text": "Revenue up " },
+    { "text": "32%", "bold": true, "color": "#F05A28" },
+    { "text": " year over year" }
+  ],
+  "style": { "font_face": "Arial", "font_size_pt": 28, "color": "#111111", "wrap": false }
+}
+```
+
+Each run may set `font_face`, `font_size_pt`, `bold`, `italic`, `underline`, `color`, and `char_spacing_pt`. Anything a run leaves out comes from the object's `style`.
 
 ## Native shape
 
@@ -70,13 +118,19 @@ Use `rect`, `round_rect`, `ellipse`, `triangle`, or `chevron`.
   "bbox": [100, 220, 360, 180],
   "style": {
     "fill": "#FFF4EF",
+    "fill_transparency": 0,
     "line": "#F05A28",
-    "line_width_pt": 1.5
+    "line_width_pt": 1.5,
+    "line_dash": "solid",
+    "corner_radius_px": 16
   }
 }
 ```
 
-Set `fill` to `null` for no fill and `line` to `null` for no outline.
+- Set `fill` to `null` for no fill and `line` to `null` for no outline.
+- `fill_transparency` ranges from 0 (opaque) to 100 (invisible).
+- `line_dash` accepts the same values as a line's `dash`.
+- `corner_radius_px` is only valid on `round_rect`. It is the measured source corner radius, in pixels. Without it, PowerPoint's default rounding applies.
 
 ## Line or arrow
 
@@ -95,7 +149,9 @@ Set `fill` to `null` for no fill and `line` to `null` for no outline.
 }
 ```
 
-Supported dash values are `solid`, `dash`, `dot`, and `dash_dot`.
+- `points` are `[x1, y1, x2, y2]` and may run in any direction: right-to-left and bottom-to-top lines keep their direction and arrowheads.
+- Zero-length lines are rejected.
+- Supported dash values are `solid`, `dash`, `dot`, and `dash_dot`.
 
 ## Image asset
 
@@ -110,7 +166,7 @@ Use image assets only for visual content that is not reliable as PowerPoint prim
 }
 ```
 
-The compiler places the image into the exact PageIR frame. Prepare the PNG canvas so its aspect ratio matches the intended source rectangle.
+`path` is relative to the PageIR file. The compiler places the image into the exact PageIR frame. The validator warns if the asset's aspect ratio differs from the bbox by more than 2%, because the asset would be stretched. `scripts/crop_asset.py` crops the asset from the source with the same bbox, so this cannot happen.
 
 ## Layering
 

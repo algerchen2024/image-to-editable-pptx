@@ -32,6 +32,16 @@ Use this checklist before delivery.
 
 ## Render comparison
 
-The provided comparison script reports normalized mean absolute error and edge F1. Treat these as review signals, not universal pass/fail thresholds. Fonts and renderer differences can change pixel metrics even when the slide is structurally correct.
+The provided comparison script reports, per slide:
 
-Inspect the generated `rendered.png`, `diff.png`, and `metrics.json` before declaring strict fidelity.
+- normalized mean absolute error and edge F1;
+- an aspect-ratio check (the script exits non-zero on a mismatch, or when the slide count differs from the number of source images);
+- `hotspots`: the grid regions with the largest difference, with the PageIR object ids they overlap when `--page-ir` is given.
+
+Treat the scores as review signals, not universal pass/fail thresholds. Fonts and renderer differences can change pixel metrics even when the slide is structurally correct.
+
+Inspect the generated `rendered.png`, `overlay.png`, `heatmap.png`, `diff.png`, and `metrics.json` before declaring strict fidelity. Each remaining hotspot should have an explanation.
+
+## Structural inspection
+
+`inspect_pptx.py` fails when a shape leaves the canvas, or when pictures cover 95% or more of a slide. That covers a single full-slide picture and several tiles that together rebuild a screenshot (`picture_union_coverage`).

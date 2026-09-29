@@ -18,6 +18,7 @@ RUNTIME_TOP_LEVEL = [
     "scripts",
     "requirements.txt",
     "package.json",
+    "package-lock.json",
 ]
 
 
