@@ -2,7 +2,15 @@
 
 All notable changes to this project will be documented here.
 
-## [0.2.0] - 2026-09-29
+## Version numbering
+
+The skill appears in ChatGPT as "GPT Image to Editable PPTX V<major>". Versions V1–V4 were iterated privately before the clean-room public release, which was tagged `v0.1.0`. From V5 on, the public version continues that numbering: the major version in `package.json` always matches the `V<n>` in the display name in `agents/openai.yaml`, and the release tag is `v<major>.<minor>.<patch>`.
+
+The PageIR `schema_version` (currently 1.1) is the version of the internal JSON format and is numbered independently.
+
+## [5.0.0] - 2026-10-09 (V5)
+
+Supersedes V4 in ChatGPT. This release was briefly labelled `0.2.0` on its pull request; that label was never tagged or released.
 
 ### Fixed
 

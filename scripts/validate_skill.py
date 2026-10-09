@@ -12,6 +12,22 @@ import yaml
 
 
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+DISPLAY_VERSION_RE = re.compile(r"\bV(\d+)$")
+
+
+def check_display_version(root: Path, display: str) -> list[str]:
+    """The V<n> suffix users see in ChatGPT must match the package.json major version."""
+    package = root / "package.json"
+    if not package.exists():
+        return []
+    version = str(json.loads(package.read_text(encoding="utf-8")).get("version", ""))
+    major = version.split(".", 1)[0]
+    match = DISPLAY_VERSION_RE.search(display.strip())
+    if not match:
+        return [f"agents/openai.yaml display_name must end with V{major} to match package.json {version}"]
+    if match.group(1) != major:
+        return [f"display_name says V{match.group(1)} but package.json version is {version}"]
+    return []
 
 
 def validate(root: Path) -> list[str]:
@@ -54,6 +70,8 @@ def validate(root: Path) -> list[str]:
             display = ((payload.get("interface") or {}).get("display_name"))
             if not isinstance(display, str) or not display.strip():
                 errors.append("agents/openai.yaml interface.display_name is missing")
+            else:
+                errors.extend(check_display_version(root, display))
     for relative in [
         "scripts/validate_page_ir.py",
         "scripts/compile_page_ir.js",
