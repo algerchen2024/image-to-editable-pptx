@@ -30,6 +30,15 @@ Use this checklist before delivery.
 - Preserve intentional colored panels and fills.
 - Remove watermarks only when the user requests a clean reconstruction and the watermark is not part of the intended slide content.
 
+## Object fit (1:1)
+
+`render_compare.py --page-ir` and `fidelity_loop.py` measure every object in the source and in the render:
+
+- shapes, lines, images: all four ink edges within 2 px (or 0.2% of page width);
+- text: first-line glyph height within 4%, same line count, line pitch within 3%, first-line width within 1.5%, first-line anchor within 2 px.
+
+`objects_off` / `worst` list what does not match yet. Every entry must be fixed or explained in the delivery report. Typical explanations: a substituted font (see `fonts.substitutions`), a hairline whose anti-aliasing differs, an image asset edge.
+
 ## Render comparison
 
 The provided comparison script reports, per slide:

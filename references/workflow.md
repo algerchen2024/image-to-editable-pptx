@@ -22,6 +22,10 @@ Use PowerPoint shapes for rectangles, rounded cards, borders, arrows, connectors
 
 Use a cropped/transparent image only when the visual cannot be represented reliably with simple geometry. `scripts/crop_asset.py` crops with the same source-pixel bbox used in PageIR, optionally turning the near-white surround transparent (`--white-to-alpha 245`), and prints the matching image object. Ensure the asset does not contain neighboring text, separators, or unrelated structure.
 
+## 5b. Measure shapes instead of estimating them
+
+Run `scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json` after the OCR draft. It adds flat panels, bordered cards, circles and horizontal/vertical rules with measured geometry, colors, stroke widths and corner radii. Glyph strokes inside text boxes are ignored. Add arrows, diagonal connectors, dashed borders, gradients and icons yourself.
+
 ## 6. Compile from PageIR
 
 Validate PageIR first, then compile. Do not silently repair wording or geometry inside the compiler. Put all page-specific decisions in PageIR.
@@ -29,6 +33,10 @@ Validate PageIR first, then compile. Do not silently repair wording or geometry 
 ## 7. Render and compare
 
 Render the PPTX to an image and compare it to the source at the same pixel dimensions. For multi-page decks, pass one source image per slide in order. Pass `--page-ir` so each difference hotspot in `metrics.json` lists the object ids it overlaps. Review the full-page difference, `overlay.png`, `heatmap.png`, and local areas around text baselines, thin rules, icon edges, and module boundaries.
+
+## 7b. Let the fidelity loop correct geometry and type
+
+`scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality` repeats compile, render, measure and refine. It corrects position, size, font size, wrapping, line spacing and letter spacing, and keeps the best round in `quality/page_ir.best.json`. It does not change wording, font family, colors, or which objects exist; those repairs are yours (next section).
 
 ## 8. Repair the owning layer
 

@@ -5,7 +5,9 @@ description: Rebuild flattened slide images, screenshots, scanned presentation p
 
 # Image to Editable PPTX
 
-Reconstruct the visible content of a flattened slide into an editable `.pptx` without redesigning it. Preserve source wording, hierarchy, geometry, and visual rhythm; do not claim recovery of hidden vectors, original chart data, masters, animations, or inaccessible source content.
+Reconstruct the visible content of a flattened slide into an editable `.pptx` that matches the source 1:1: the same wording, geometry, colors, and type sizes. Do not redesign. Do not claim recovery of hidden vectors, original chart data, masters, animations, or inaccessible source content.
+
+Fidelity comes from measuring, not estimating: shapes are measured from the source pixels (`detect_shapes.py`), and every object is then measured again in the rendered result and corrected automatically (`fidelity_loop.py`). Your job is the part tools cannot do: correct wording, choose fonts, decide what is an image, and review what remains.
 
 ## Core rules
 
@@ -13,7 +15,7 @@ Reconstruct the visible content of a flattened slide into an editable `.pptx` wi
 - Recreate readable text as editable text boxes.
 - Recreate simple panels, borders, separators, arrows, and geometric icons as native PowerPoint shapes.
 - Use raster assets only for complex visuals that cannot be reproduced reliably with native shapes.
-- Never use the entire source image, or tiles of it, as the visible slide background when the user asks for an editable reconstruction.
+- Never place the source image, or tiles of it, anywhere in the deck as a background or "fidelity layer". This includes temporary drafts, and images hidden behind other objects. `inspect_pptx.py` detects pictures that cover the slide at any z-order. Start directly with the PageIR workflow below; there is no screenshot-first phase.
 - Never replace an icon with an emoji, font glyph, or unrelated symbol.
 - Preserve the source aspect ratio and use source-pixel coordinates as the canonical geometry space.
 - Use a pure white background when the user explicitly asks for white/clean background; otherwise preserve the visible source background.
@@ -21,23 +23,31 @@ Reconstruct the visible content of a flattened slide into an editable `.pptx` wi
 
 ## Workflow
 
-1. Run a runtime check when code execution is available:
+1. Check the runtime. Note `ready_render_compare` and `cjk_render_ready`:
 
 ```bash
 python3 scripts/runtime_check.py --ocr-lang chi_sim+eng
 ```
 
-2. Inspect the source image visually. Record the source width and height.
-3. Extract candidate text and turn it into a draft PageIR (estimated font sizes, sampled text and page colors):
+If `cjk_render_ready` is false and the slide has Chinese text, install a CJK font for rendering (for example Noto Sans CJK, Source Han Sans, or WenQuanYi) **before** the first render; otherwise Chinese renders blank. This affects verification renders only. Keep the `font_face` the source design calls for (for example `Microsoft YaHei`) in PageIR.
+
+2. Inspect the source image visually. Record the source width and height. With several pages, keep one source image per slide, in order.
+3. Draft the text from OCR (estimated font sizes, sampled text and page colors):
 
 ```bash
 python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
 python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --out page_ir.json
 ```
 
-Treat the draft only as evidence. Every text object carries a `note` with its OCR confidence; correct wording, punctuation, spacing, line breaks, weight, and font against the source, then delete the notes you have resolved.
+Treat the draft as evidence. Every text object carries a `note` with its OCR confidence. Correct wording, punctuation, line breaks, weight, and font family against the source. Merge lines that belong to one paragraph, and use `runs` for mixed styling. Delete the notes you have resolved.
 
-4. Complete the PageIR using `references/pageir-schema.md`: add panels, lines, and arrows; represent each visible object once. Measure colors instead of guessing, and crop complex visuals from the source so the asset matches its frame:
+4. Measure the shapes and add them to the draft. Panels, bordered cards, circles, and horizontal/vertical rules come back with measured position, size, fill, border color, stroke width, and corner radius:
+
+```bash
+python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json
+```
+
+Then add what detection cannot see: arrows (set `end_arrow`), diagonal connectors, dashed borders, gradients, and icons. Measure any remaining colors with `sample_colors.py` instead of guessing. Crop complex visuals from the source so each asset matches its frame:
 
 ```bash
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180
@@ -50,27 +60,25 @@ python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/lo
 python3 scripts/validate_page_ir.py page_ir.json
 ```
 
-6. Compile the PageIR into PowerPoint:
+6. Run the fidelity loop. It compiles, renders, measures every object against the source, and corrects position, size, font size, wrapping, line spacing, and letter spacing, keeping the best round:
 
 ```bash
-node scripts/compile_page_ir.js page_ir.json output.pptx
+python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality
+cp quality/page_ir.best.json page_ir.json
 ```
 
-7. Inspect the compiled deck for canvas overflow and full-slide or tiled image shortcuts:
+For several pages, pass all source images in slide order after the PageIR.
+
+7. Review `quality/final/` for each slide: `overlay.png` (source and result blended), `heatmap.png`, and the `objects_off` list. The loop cannot fix wording, font family, color, missing or extra objects, or anything the source shows that PageIR lacks. Fix those in PageIR and run the loop again.
+8. Inspect the final deck structurally:
 
 ```bash
 python3 scripts/inspect_pptx.py output.pptx
 ```
 
-8. Render and compare the result when LibreOffice and Poppler are available. Pass one source image per slide, in order:
+9. Deliver the `.pptx` with the delivery report below.
 
-```bash
-python3 scripts/render_compare.py source.png output.pptx --outdir quality --page-ir page_ir.json
-```
-
-9. Review `rendered.png`, `overlay.png`, and `heatmap.png`. `metrics.json` lists `hotspots`, the largest-difference regions with the PageIR object ids they overlap, so repair those objects first. Fix PageIR geometry or styling rather than hiding differences with a screenshot.
-10. Re-run validation, compilation, and comparison after every material repair.
-11. Deliver only the final editable `.pptx` and disclose any unresolved model-inferred text or visual approximation.
+Without the loop (for example to try one manual change), `node scripts/compile_page_ir.js` compiles. `render_compare.py source.png output.pptx --outdir quality --page-ir page_ir.json` measures. `refine_pageir.py quality/metrics.json page_ir.json --out page_ir.json` applies one round of corrections.
 
 ## Minimal PageIR
 
@@ -105,14 +113,16 @@ Use these default mappings:
 
 For a complex image object, use an asset with transparent or white-safe margins and place it in the exact source-pixel rectangle. Avoid crop/stretch behavior unless the source itself is visibly stretched.
 
+**Tables and UI screenshots.** A table with readable text is content the user will want to edit. Rebuild it as text objects plus rules and cell fills. `detect_shapes.py` measures the grid lines and cell fills; `ocr_to_pageir.py` drafts the cell text. Keep a table or an embedded UI screenshot as an image only when its text is too small or dense to rebuild reliably. If you do, list it in the delivery report as an image region with the reason, and offer to rebuild it.
+
 ## Text fidelity
 
 - Use one text object per visible source line for titles, short labels, captions, and badges, and set `wrap: false` on them so renderer font differences cannot introduce a line break.
 - Preserve visible line breaks.
 - Do not auto-rewrite wording.
 - Prefer explicit font size and box geometry over shrink-to-fit.
-- Match boldness, alignment, color, line spacing, and approximate font family.
-- If the exact font is unavailable, choose the nearest metric-compatible font and re-check the render.
+- Match boldness, alignment, color, line spacing, and font family. Identify the family from the source (CJK sans such as Microsoft YaHei / PingFang / Source Han Sans, or Latin sans/serif) rather than defaulting to Arial.
+- Never change `font_face` to suit the render environment. If the render environment lacks the font, `render_compare.py` reports it under `fonts.substitutions`. The loop then skips width and letter-spacing tuning for that font, because tuning against a substitute's metrics would make the real PowerPoint wrong. Metric-compatible substitutes (Arial ↔ Liberation Sans, Calibri ↔ Carlito, and so on) are still tuned.
 
 ## White-background requests
 
@@ -123,33 +133,44 @@ When the user asks for a pure white background:
 - Do not retain scanned paper tint, screenshot shadows, or watermarks as background texture.
 - Do not remove foreground content that is genuinely part of the design.
 
-## Quality gates
+## 1:1 tolerances and quality gates
+
+An object matches when its rendered ink lies within **2 px or 0.2% of the page width**, whichever is larger, of the source ink on every edge. For text, the glyph height must also be within 4%, the first-line width within 1.5%, and the line count and line pitch must match. `object_fit_ratio` is the share of measured objects that match.
 
 Before delivery, require all of the following:
 
 - Source and output aspect ratios match within 0.1%.
 - All readable source text intended to remain text is editable.
 - `inspect_pptx.py` passes: no shape outside the canvas, no full-slide or tiled raster shortcut.
-- No unintended object overlap or clipping is visible.
+- `render_compare` / `fidelity_loop` report no `problems` (missing CJK font, slide-count or aspect mismatch).
+- Every object in `objects_off` is either fixed or explained in the delivery report.
 - Background matches the user request.
-- Major anchors, columns, rows, arrows, and separators align with the source.
-- Rendered differences are reviewed at full-slide and local-object level, and every remaining hotspot is explained (font substitution, anti-aliasing, intentional white background) rather than ignored.
-
-Use `references/quality-checks.md` for the detailed review checklist.
 
 ## When to stop repairing
 
-Stop iterating when the remaining hotspots are all explained as above and a further repair would not visibly change the slide. As a guide, a clean slide export usually reaches `edge_f1` ≥ 0.6 and `normalized_mae` ≤ 0.05; scans and photos score lower, so judge them visually. After about five repair rounds without visible improvement, deliver and list what is still approximate.
+The loop stops by itself when every object matches or corrections stop helping. Stop your own repairs when `objects_off` is empty, or every remaining entry is explained (substituted font, anti-aliased hairline, asset edge) and a further change would not be visible in `overlay.png`. For clean digital slide exports, a good result typically reaches `object_fit_ratio` ≥ 0.9 and `edge_f1` ≥ 0.85. Scans and photos score lower; judge them from the overlay.
 
 ## When tools are missing
 
 - No Tesseract or language pack: transcribe text visually and author PageIR by hand; say that OCR was not used.
-- No LibreOffice or Poppler: still run `validate_page_ir.py` and `inspect_pptx.py`, and state in the final answer that no render comparison was performed. Do not claim strict visual fidelity.
+- No CJK font for rendering: install one (see workflow step 1). If that is impossible, the comparison of Chinese text is invalid; say so.
+- No LibreOffice or Poppler: `fidelity_loop.py` and `render_compare.py` cannot run. Still run `detect_shapes.py`, `validate_page_ir.py`, and `inspect_pptx.py`. Say in the delivery report that no render comparison was performed, and do not claim 1:1 fidelity.
+- OpenCV is **not** required; all image tools use numpy and Pillow only.
 - No Node.js or PptxGenJS: report that the compiler cannot run; do not substitute a screenshot-based deck.
 
-## Output contract
+## Delivery report
 
-Use a concise final response and link the generated `.pptx`. If a machine or visual gate cannot be completed, state the exact limitation instead of claiming strict fidelity.
+End with the `.pptx` link and this report, filled with real numbers. Write "not measured" where a step could not run; never round a missing measurement up to "passed".
+
+```text
+Pages: <n>, aspect <w:h> (matches source: yes/no)
+Per slide: editable text objects <n>, native shapes <n>, image objects <n>
+Fidelity (fidelity_loop final): slide 1 object fit <ok>/<measured>, edge_f1 <x.xx>, MAE <x.xxxx>; ...
+Objects still off: <ids and why> | none
+Image regions kept as pictures: <what, why> | none
+Fonts: <requested -> rendered with>; substitutions affect only the verification render
+Not verified: <steps that could not run and why> | none
+```
 
 ## References
 

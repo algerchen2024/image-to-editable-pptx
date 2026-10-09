@@ -8,11 +8,15 @@ import importlib
 import json
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from font_check import cjk_font_families  # noqa: E402
 
 
 PYTHON_MODULES = {
-    "opencv-python": "cv2",
     "numpy": "numpy",
     "pillow": "PIL",
     "python-pptx": "pptx",
@@ -83,7 +87,13 @@ def build_report(ocr_lang: str) -> dict[str, Any]:
     renderer_available = bool(executables["soffice"] or executables["libreoffice"])
     missing_python = [name for name, status in modules.items() if not status["available"]]
     ready_core = not missing_python and bool(executables["node"]) and pptxgenjs["available"]
-    ready_compare = renderer_available and bool(executables["pdftoppm"])
+    compare_modules = ("numpy", "pillow", "python-pptx")
+    ready_compare = (
+        renderer_available
+        and bool(executables["pdftoppm"])
+        and all(modules[name]["available"] for name in compare_modules)
+    )
+    cjk_fonts = cjk_font_families()
     return {
         "ready_core": ready_core,
         "ready_render_compare": ready_compare,
@@ -92,7 +102,12 @@ def build_report(ocr_lang: str) -> dict[str, Any]:
         "pptxgenjs": pptxgenjs,
         "ocr_requested": requested_langs,
         "ocr_languages_missing": missing_langs,
+        "cjk_fonts": cjk_fonts,
+        "cjk_render_ready": bool(cjk_fonts),
         "notes": [
+            "No OpenCV needed: render comparison and fidelity_loop use numpy + Pillow only.",
+            "cjk_render_ready=false means Chinese renders blank; install a CJK font (Noto Sans CJK, "
+            "Source Han Sans, WenQuanYi) for verification renders before comparing. Keep PageIR font_face unchanged.",
             "OCR language packs are optional if text is transcribed by another trusted method.",
             "LibreOffice and pdftoppm are needed only for the provided render-comparison script.",
         ],

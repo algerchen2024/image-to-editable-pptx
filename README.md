@@ -141,7 +141,11 @@ python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_li
 python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --out page_ir.json   # draft text objects
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # measured colors
 python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
+python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # measured panels, borders, rules
+python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # compile, compare, auto-correct
 ```
+
+`fidelity_loop.py` compiles the PageIR, renders it, measures every object against the source (edges for shapes, line by line for text), and corrects position, size, font size, wrapping, line spacing and letter spacing until objects match within 2 px. Image tools need only numpy and Pillow; OpenCV is not required.
 
 ## PageIR
 

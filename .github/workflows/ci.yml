@@ -59,7 +59,7 @@ jobs:
           node-version: "20"
           cache: npm
       - name: Install renderer
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress poppler-utils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress poppler-utils fonts-wqy-zenhei
       - name: Install dependencies
         run: |
           python -m pip install -r requirements.txt
@@ -72,6 +72,8 @@ jobs:
           python -c "from PIL import Image; Image.open('/tmp/features.png').convert('RGB').resize((1600, 900)).save('/tmp/source.png')"
       - name: Compare the compiled deck with the source
         run: python scripts/render_compare.py /tmp/source.png /tmp/features.pptx --outdir quality --page-ir examples/features/page_ir.json
+      - name: Fidelity loop converges on a perturbed PageIR
+        run: python -m unittest tests.test_fidelity_loop -v
       - uses: actions/upload-artifact@v4
         if: always()
         with:
