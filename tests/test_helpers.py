@@ -81,6 +81,15 @@ class OcrToPageIrTests(unittest.TestCase):
         self.assertEqual(payload["pages"][0]["background"], "#FFFFFF")
         self.assertEqual(validate_page_ir.validate_page_ir(payload, ROOT), [])
 
+    def test_mac_target_defaults(self):
+        ocr = {"width_px": 1600, "height_px": 900, "lines": [{"text": "标题 Title", "bbox": [70, 60, 400, 44], "confidence": 92}]}
+        fonts = pageir_common.DEFAULT_FONTS["mac"]
+        payload = ocr_to_pageir.build_page_ir(ocr, fonts, platform="mac")
+        self.assertEqual(payload["target"]["platform"], "mac")
+        self.assertEqual(payload["pages"][0]["objects"][0]["style"]["font_face"], "PingFang SC")
+        errors, warnings = validate_page_ir.validate_page_ir_detailed(payload, ROOT)
+        self.assertEqual((errors, warnings), ([], []))
+
 
 class CropAssetTests(unittest.TestCase):
     def test_crop_pad_clamp_and_alpha(self):

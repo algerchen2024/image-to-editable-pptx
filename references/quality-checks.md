@@ -37,6 +37,8 @@ Use this checklist before delivery.
 - shapes, lines, images: all four ink edges within 2 px (or 0.2% of page width);
 - text: first-line glyph height within 4%, same line count, line pitch within 3%, first-line width within 1.5%, first-line anchor within 2 px.
 
+Text is also checked for stroke weight. When the source is clearly heavier or lighter, the loop toggles `bold`. When that is not enough, `font_hints` asks for a heavier or lighter family, such as a Heavy weight of Source Han Sans / Noto Sans CJK installed on the user's machine.
+
 `objects_off` / `worst` list what does not match yet. Every entry must be fixed or explained in the delivery report. Typical explanations: a substituted font (see `fonts.substitutions`), a hairline whose anti-aliasing differs, an image asset edge.
 
 ## Render comparison

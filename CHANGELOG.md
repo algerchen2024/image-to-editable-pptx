@@ -8,6 +8,24 @@ The skill appears in ChatGPT as "GPT Image to Editable PPTX V<major>". Versions 
 
 The PageIR `schema_version` (currently 1.1) is the version of the internal JSON format and is numbered independently.
 
+## [5.2.0] - 2026-10-10 (V5.2)
+
+From a real ChatGPT run (WorkBuddy slide): the deck used the sandbox font Noto Sans CJK SC, which a Mac or Windows PowerPoint does not have. Numbers and units sat in separate boxes and collided once the font changed. Headings were lighter than the source, and the loop's text measurement was thrown off by neighbouring lines and colored headers.
+
+### Added
+
+- Target machine in PageIR (`target.platform`, `target.installed_fonts`); default `mac`. The validator rejects render-sandbox fonts unless the user installed them, and warns about fonts that are not standard on the target.
+- `ocr_to_pageir.py --target mac|windows` (default mac): PingFang SC / Helvetica Neue on mac, Microsoft YaHei / Arial on windows.
+- `install_fonts.py`: install user-supplied, licensed font files (e.g. Source Han Sans / Noto Sans CJK, which the user also installs on their Mac) so the loop tunes against the exact delivery font.
+- Same-line lint: separate text objects that read as one phrase (number + unit, label + count) raise a warning to merge them into one object with runs.
+- Stroke-weight fitting: text ink density is compared with the source; the loop toggles bold, and `font_hints` asks for a heavier or lighter family when bold is not enough.
+- SKILL.md: "Fonts for the user's machine" section with a strict 1:1 route, the runs rule, a mandatory fidelity-loop delivery, and "high fidelity" only at object fit ≥ 0.9.
+
+### Fixed
+
+- Text measurement: the background behind text is taken from inside the text box (white text on colored headers); lines are built from full-height glyphs only, so radicals or punctuation of a neighbouring line can no longer stretch a line; tighter vertical and wider horizontal search windows (overflowing single-line titles).
+- Fidelity loop scoring includes mean per-object error, so partial progress is kept instead of being discarded.
+
 ## [5.1.0] - 2026-10-09 (V5.1)
 
 Aimed at 1:1 fidelity and at the failures seen in a real ChatGPT run (missing OpenCV, blank Chinese renders, a screenshot "fidelity layer", tables kept as images, unverifiable delivery reports).

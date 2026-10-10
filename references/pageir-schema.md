@@ -18,6 +18,20 @@ Schema `1.1` is a backward-compatible superset of `1.0`: every 1.0 file is a val
 
 `lang`, `title`, and `default_font_face` are optional (defaults: `zh-CN`, a generic title, `Arial`).
 
+### Target machine and fonts
+
+```json
+"target": {"platform": "mac", "installed_fonts": ["Noto Sans CJK SC"]}
+```
+
+`target` describes where the PPTX will be opened. `platform` is `mac`, `windows`, or `any`. `installed_fonts` lists extra fonts the user has installed there.
+
+The validator then checks every `font_face`, including run fonts and `default_font_face`:
+- Render-sandbox fonts (Noto, WenQuanYi, DejaVu, Liberation, …) are **errors** unless listed in `installed_fonts`.
+- Fonts that are not standard on the target platform are **warnings**.
+
+Defaults are `PingFang SC` / `Helvetica Neue` on mac, and `Microsoft YaHei` / `Arial` on windows.
+
 Each page must contain:
 
 ```json
@@ -106,6 +120,8 @@ Use `runs` instead of `text` when one line mixes weight, color, size, or font:
 ```
 
 Each run may set `font_face`, `font_size_pt`, `bold`, `italic`, `underline`, `color`, and `char_spacing_pt`. Anything a run leaves out comes from the object's `style`.
+
+Keep each visual phrase in one object with runs: a number and its unit, a label and its count, a brand and its title. The validator warns when separate text objects sit on one line, because they collide or drift apart when the viewer's font differs from the render font.
 
 ## Native shape
 

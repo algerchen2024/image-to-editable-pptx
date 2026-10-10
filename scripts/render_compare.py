@@ -244,6 +244,7 @@ def main() -> int:
                     {
                         "object_fit": f"{s['object_fit']['within_tolerance']}/{s['object_fit']['measured']}",
                         "worst_objects": s["object_fit"]["worst"],
+                        "font_hints": s["object_fit"]["font_hints"],
                     }
                     if "object_fit" in s
                     else {}

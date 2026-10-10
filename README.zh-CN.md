@@ -143,14 +143,17 @@ node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
 
 ```bash
 python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
-python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --out page_ir.json   # 生成文本对象草稿
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target mac --out page_ir.json   # 生成文本对象草稿
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # 实测颜色
 python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
+python3 scripts/install_fonts.py fonts/                                                          # 可选：用与交付一致的字体渲染
 python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # 实测面板、边框、分隔线
 python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # 编译、比对、自动校正
 ```
 
 `fidelity_loop.py` 会编译 PageIR、渲染、把每个对象与原图逐一测量比对（形状按四条边，文字逐行），并自动校正位置、尺寸、字号、换行、行距和字间距，直到对象误差在 2 像素以内。图像工具只依赖 numpy 和 Pillow，不需要 OpenCV。
+
+字体按打开 PPTX 的电脑来选：`--target mac` 默认用苹方（PingFang SC）和 Helvetica Neue，`windows` 默认用微软雅黑和 Arial。渲染环境专用的字体（如 Noto Sans CJK）会被校验拦截，除非用户的电脑上也装了。
 
 ## PageIR
 

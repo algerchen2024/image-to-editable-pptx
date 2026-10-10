@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pageir_common import is_hex_color  # noqa: E402
+from pageir_common import font_issue, is_hex_color, page_ir_font_names, target_of  # noqa: E402
 
 
 SCHEMA_VERSIONS = {"1.0", "1.1"}
@@ -22,6 +22,7 @@ ALLOWED_VALIGN = {"top", "mid", "bottom"}
 ALLOWED_DASH = {"solid", "dash", "dot", "dash_dot"}
 ALLOWED_ARROW = {"none", "triangle"}
 IMAGE_ASPECT_TOLERANCE = 0.02
+PLATFORMS = {"mac", "windows", "any"}
 
 
 def is_number(value: Any) -> bool:
@@ -249,12 +250,84 @@ def validate_page_ir_detailed(payload: Any, base_dir: Path) -> tuple[list[str], 
                         if warning:
                             warnings.append(warning)
 
+    errors_fonts, warnings_fonts = validate_fonts(payload)
+    errors += errors_fonts
+    warnings += warnings_fonts
+    for p_idx, page in enumerate(pages):
+        if isinstance(page, dict) and isinstance(page.get("objects"), list):
+            warnings += same_line_text_warnings(page, f"pages[{p_idx}]")
+
     if ratios:
         base = ratios[0]
         for idx, ratio in enumerate(ratios[1:], start=1):
             if abs(ratio - base) / base > 0.001:
                 errors.append(f"pages[{idx}] aspect ratio differs by more than 0.1%")
     return errors, warnings
+
+
+def validate_fonts(payload: dict) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    target = payload.get("target")
+    if target is not None:
+        if not isinstance(target, dict):
+            return ["target must be an object"], warnings
+        if str(target.get("platform", "any")).lower() not in PLATFORMS:
+            errors.append(f"target.platform must be one of {sorted(PLATFORMS)}")
+        fonts = target.get("installed_fonts", [])
+        if not isinstance(fonts, list) or not all(isinstance(f, str) for f in fonts):
+            errors.append("target.installed_fonts must be an array of font names")
+    platform, installed = target_of(payload)
+    for name in sorted(page_ir_font_names(payload)):
+        issue = font_issue(name, platform, installed)
+        if issue:
+            (errors if issue[0] == "error" else warnings).append(issue[1])
+    return errors, warnings
+
+
+def _one_line(obj: dict) -> bool:
+    if isinstance(obj.get("runs"), list):
+        text = "".join(str(r.get("text", "")) for r in obj["runs"] if isinstance(r, dict))
+    else:
+        text = str(obj.get("text") or "")
+    return "\n" not in text and bool(text.strip())
+
+
+def same_line_text_warnings(page: dict, ppath: str) -> list[str]:
+    """Separate text objects that read as one line (a number and its unit, a label and its count).
+
+    Positioned independently, they collide or drift apart as soon as the
+    viewer's font differs from the render font. One object with `runs` keeps
+    them flowing together.
+    """
+    boxes = []
+    for obj in page["objects"]:
+        bbox = obj.get("bbox") if isinstance(obj, dict) else None
+        if (
+            obj.get("type") == "text"
+            and _one_line(obj)
+            and not obj.get("rotation_deg")
+            and isinstance(bbox, list)
+            and len(bbox) == 4
+            and all(is_number(v) for v in bbox)
+        ):
+            boxes.append((str(obj.get("id")), [float(v) for v in bbox]))
+    boxes.sort(key=lambda item: item[1][0])
+    warnings = []
+    for i, (a_id, (ax, ay, aw, ah)) in enumerate(boxes):
+        for b_id, (bx, by, bw, bh) in boxes[i + 1 :]:
+            gap = bx - (ax + aw)
+            if gap > 0.4 * min(ah, bh):
+                continue
+            if gap < -0.5 * min(aw, bw):
+                continue  # stacked/overlapping boxes, not a left-to-right phrase
+            overlap = min(ay + ah, by + bh) - max(ay, by)
+            if overlap >= 0.5 * min(ah, bh):
+                warnings.append(
+                    f"{ppath}: text objects '{a_id}' and '{b_id}' sit on one line; if they are one phrase "
+                    "(number + unit, label + count, brand + title) merge them into one text object with runs"
+                )
+    return warnings
 
 
 def validate_page_ir(payload: Any, base_dir: Path) -> list[str]:

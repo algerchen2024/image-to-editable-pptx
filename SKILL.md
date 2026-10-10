@@ -23,23 +23,23 @@ Fidelity comes from measuring, not estimating: shapes are measured from the sour
 
 ## Workflow
 
-1. Check the runtime. Note `ready_render_compare` and `cjk_render_ready`:
+1. Settle the target machine and fonts first (see **Fonts for the user's machine**): the platform the user opens PowerPoint on (default `mac`) and the font families to use. Then check the runtime and note `ready_render_compare` and `cjk_render_ready`:
 
 ```bash
 python3 scripts/runtime_check.py --ocr-lang chi_sim+eng
 ```
 
-If `cjk_render_ready` is false and the slide has Chinese text, install a CJK font for rendering (for example Noto Sans CJK, Source Han Sans, or WenQuanYi) **before** the first render; otherwise Chinese renders blank. This affects verification renders only. Keep the `font_face` the source design calls for (for example `Microsoft YaHei`) in PageIR.
+If `cjk_render_ready` is false and the slide has Chinese text, install a CJK font for rendering (for example Noto Sans CJK, Source Han Sans, or WenQuanYi) **before** the first render; otherwise Chinese renders blank. A font installed only for rendering never goes into PageIR as `font_face`; see the next section.
 
 2. Inspect the source image visually. Record the source width and height. With several pages, keep one source image per slide, in order.
 3. Draft the text from OCR (estimated font sizes, sampled text and page colors):
 
 ```bash
 python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
-python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --out page_ir.json
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target mac --out page_ir.json
 ```
 
-Treat the draft as evidence. Every text object carries a `note` with its OCR confidence. Correct wording, punctuation, line breaks, weight, and font family against the source. Merge lines that belong to one paragraph, and use `runs` for mixed styling. Delete the notes you have resolved.
+Treat the draft as evidence. Every text object carries a `note` with its OCR confidence. Correct wording, punctuation, line breaks, and weight against the source. Merge lines that belong to one paragraph. Put each visual phrase in **one** text object with `runs`: a number and its unit (`1,000` + `项`), a label and its count (`剔除【不合适】` + `127项`), a brand and its title (`WorkBuddy` + `平安内网…`). Separate boxes collide or drift apart as soon as the viewer's font differs from the render font, and the validator warns about them. Delete the notes you have resolved.
 
 4. Measure the shapes and add them to the draft. Panels, bordered cards, circles, and horizontal/vertical rules come back with measured position, size, fill, border color, stroke width, and corner radius:
 
@@ -60,7 +60,7 @@ python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/lo
 python3 scripts/validate_page_ir.py page_ir.json
 ```
 
-6. Run the fidelity loop. It compiles, renders, measures every object against the source, and corrects position, size, font size, wrapping, line spacing, and letter spacing, keeping the best round:
+6. Run the fidelity loop. It compiles, renders, measures every object against the source, and corrects position, size, font size, bold, wrapping, line spacing, and letter spacing, keeping the best round. Do not hand-tune sizes or positions instead of running it; after any manual edit, run it again and deliver its `page_ir.best.json`:
 
 ```bash
 python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality
@@ -69,7 +69,7 @@ cp quality/page_ir.best.json page_ir.json
 
 For several pages, pass all source images in slide order after the PageIR.
 
-7. Review `quality/final/` for each slide: `overlay.png` (source and result blended), `heatmap.png`, and the `objects_off` list. The loop cannot fix wording, font family, color, missing or extra objects, or anything the source shows that PageIR lacks. Fix those in PageIR and run the loop again.
+7. Review `quality/final/` for each slide: `overlay.png` (source and result blended), `heatmap.png`, the `objects_off` list, and `font_hints`. A font hint means the source strokes are heavier (or lighter) than the chosen font can produce even after toggling bold: choose a heavier family or weight (see the next section). The loop cannot fix wording, font family, color, missing or extra objects, or anything the source shows that PageIR lacks. Fix those in PageIR and run the loop again.
 8. Inspect the final deck structurally:
 
 ```bash
@@ -80,11 +80,28 @@ python3 scripts/inspect_pptx.py output.pptx
 
 Without the loop (for example to try one manual change), `node scripts/compile_page_ir.js` compiles. `render_compare.py source.png output.pptx --outdir quality --page-ir page_ir.json` measures. `refine_pageir.py quality/metrics.json page_ir.json --out page_ir.json` applies one round of corrections.
 
+## Fonts for the user's machine
+
+The PPTX is opened on the user's computer, not in the sandbox where it is rendered for checking. Every `font_face` must exist on that computer; otherwise PowerPoint substitutes it there and numbers, units, and titles collide.
+
+- Record the target in PageIR: `"target": {"platform": "mac", "installed_fonts": []}`. Use `mac` unless the user says they use Windows. `ocr_to_pageir.py --target` writes this for you.
+- Default fonts: **mac**: `PingFang SC` for Chinese, `Helvetica Neue` (or `Arial`) for Latin text and numbers. **windows**: `Microsoft YaHei` and `Arial`.
+- Never write a sandbox font (`Noto Sans CJK SC`, `WenQuanYi`, `DejaVu`, `Liberation`, …) into PageIR because it renders nicely here. The validator rejects it unless it is listed in `target.installed_fonts`, meaning the user has installed it too.
+- With default fonts the sandbox renders a substitute, so the loop matches size and position but skips letter-spacing tuning. Expect small differences in line length on the user's machine, and say so in the report.
+
+**Strict 1:1, and heavy display type.** PingFang SC stops at Semibold, but many designed slides use a heavier Chinese weight. For an exact match, use an open-licensed family that exists both here and on the user's Mac, for example **Noto Sans CJK SC / Source Han Sans SC (思源黑体)**. It is free to install on macOS and Windows and has Bold, Heavy, and Black weights.
+1. Ask the user to install it on their Mac.
+2. If the sandbox lacks it, install the same font files here with `python3 scripts/install_fonts.py <font files or folder>`.
+3. Use that family name as `font_face` and list it in `target.installed_fonts`.
+
+The loop then tunes against the exact font the user will see. Do not copy Apple or Microsoft system fonts into the sandbox: their licenses do not allow it.
+
 ## Minimal PageIR
 
 ```json
 {
   "schema_version": "1.1",
+  "target": {"platform": "mac", "installed_fonts": []},
   "pages": [{
     "id": "slide-1", "width_px": 1600, "height_px": 900, "background": "#FFFFFF",
     "objects": [
@@ -93,8 +110,11 @@ Without the loop (for example to try one manual change), `node scripts/compile_p
       {"id": "arrow", "type": "line", "points": [700, 310, 500, 310], "z": 2,
        "style": {"color": "#F05A28", "width_pt": 2, "end_arrow": "triangle"}},
       {"id": "title", "type": "text", "bbox": [54, 36, 1150, 60], "z": 10,
-       "runs": [{"text": "Plain "}, {"text": "emphasis", "bold": true, "color": "#F05A28"}],
-       "style": {"font_face": "Microsoft YaHei", "font_size_pt": 30, "color": "#111111", "wrap": false}}
+       "runs": [{"text": "WorkBuddy ", "font_face": "Helvetica Neue"}, {"text": "准入筛选", "color": "#F05A28"}],
+       "style": {"font_face": "PingFang SC", "font_size_pt": 30, "bold": true, "color": "#111111", "wrap": false}},
+      {"id": "total", "type": "text", "bbox": [54, 400, 300, 90], "z": 10,
+       "runs": [{"text": "1,000", "font_face": "Helvetica Neue", "font_size_pt": 54}, {"text": "项", "font_size_pt": 20}],
+       "style": {"font_face": "PingFang SC", "bold": true, "color": "#1E7B45", "valign": "bottom", "wrap": false}}
     ]
   }]
 }
@@ -121,8 +141,8 @@ For a complex image object, use an asset with transparent or white-safe margins 
 - Preserve visible line breaks.
 - Do not auto-rewrite wording.
 - Prefer explicit font size and box geometry over shrink-to-fit.
-- Match boldness, alignment, color, line spacing, and font family. Identify the family from the source (CJK sans such as Microsoft YaHei / PingFang / Source Han Sans, or Latin sans/serif) rather than defaulting to Arial.
-- Never change `font_face` to suit the render environment. If the render environment lacks the font, `render_compare.py` reports it under `fonts.substitutions`. The loop then skips width and letter-spacing tuning for that font, because tuning against a substitute's metrics would make the real PowerPoint wrong. Metric-compatible substitutes (Arial ↔ Liberation Sans, Calibri ↔ Carlito, and so on) are still tuned.
+- Match boldness, alignment, color, and line spacing; take the family from **Fonts for the user's machine**.
+- Never change `font_face` to suit the render environment. When the render environment lacks the font, `render_compare.py` reports it under `fonts.substitutions`. The loop then skips width and letter-spacing tuning for that font, because tuning against a substitute's metrics would make the real PowerPoint wrong. Metric-compatible substitutes (Arial ↔ Liberation Sans, Calibri ↔ Carlito, and so on) are still tuned.
 
 ## White-background requests
 
@@ -142,13 +162,17 @@ Before delivery, require all of the following:
 - Source and output aspect ratios match within 0.1%.
 - All readable source text intended to remain text is editable.
 - `inspect_pptx.py` passes: no shape outside the canvas, no full-slide or tiled raster shortcut.
+- `validate_page_ir.py` passes with no font errors (every `font_face` exists on the target machine) and no unresolved same-line warnings.
 - `render_compare` / `fidelity_loop` report no `problems` (missing CJK font, slide-count or aspect mismatch).
+- The delivered deck is the `fidelity_loop` output built from `page_ir.best.json`.
 - Every object in `objects_off` is either fixed or explained in the delivery report.
 - Background matches the user request.
 
 ## When to stop repairing
 
 The loop stops by itself when every object matches or corrections stop helping. Stop your own repairs when `objects_off` is empty, or every remaining entry is explained (substituted font, anti-aliased hairline, asset edge) and a further change would not be visible in `overlay.png`. For clean digital slide exports, a good result typically reaches `object_fit_ratio` ≥ 0.9 and `edge_f1` ≥ 0.85. Scans and photos score lower; judge them from the overlay.
+
+Only call the result "high fidelity" or "1:1" when `object_fit_ratio` ≥ 0.9. Below that, deliver it as a close reconstruction, list the largest remaining differences, and say what would close them: usually the font route above, or objects the loop cannot fix.
 
 ## When tools are missing
 
@@ -165,10 +189,13 @@ End with the `.pptx` link and this report, filled with real numbers. Write "not 
 ```text
 Pages: <n>, aspect <w:h> (matches source: yes/no)
 Per slide: editable text objects <n>, native shapes <n>, image objects <n>
-Fidelity (fidelity_loop final): slide 1 object fit <ok>/<measured>, edge_f1 <x.xx>, MAE <x.xxxx>; ...
+Fidelity loop: <rounds> rounds, best round <k>, delivered from page_ir.best.json: yes/no
+Fidelity (final): slide 1 object fit <ok>/<measured>, edge_f1 <x.xx>, MAE <x.xxxx>; ...
 Objects still off: <ids and why> | none
+Font hints: <ids: heavier/lighter weight needed> | none
 Image regions kept as pictures: <what, why> | none
-Fonts: <requested -> rendered with>; substitutions affect only the verification render
+Target: <mac|windows>; fonts in the PPTX: <names> (all available on target: yes/no)
+Verification render used: <requested -> rendered with>; exact-font render: yes/no
 Not verified: <steps that could not run and why> | none
 ```
 

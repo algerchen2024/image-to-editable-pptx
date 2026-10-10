@@ -110,3 +110,43 @@ def page(objects):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FontAndLayoutLintTests(unittest.TestCase):
+    def text(self, oid, bbox, font="PingFang SC", text="项"):
+        return {"id": oid, "type": "text", "bbox": bbox, "text": text, "style": {"font_face": font}}
+
+    def lint(self, objects, target=None):
+        payload = page(objects)
+        if target is not None:
+            payload["target"] = target
+        return module.validate_page_ir_detailed(payload, ROOT)
+
+    def test_render_sandbox_font_is_an_error(self):
+        errors, _ = self.lint([self.text("t", [0, 0, 50, 10], "Noto Sans CJK SC")], {"platform": "mac"})
+        self.assertTrue(any("render-sandbox font" in e and "PingFang SC" in e for e in errors))
+
+    def test_installed_font_is_allowed(self):
+        errors, warnings = self.lint(
+            [self.text("t", [0, 0, 50, 10], "Noto Sans CJK SC")],
+            {"platform": "mac", "installed_fonts": ["Noto Sans CJK SC"]},
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+
+    def test_windows_font_on_mac_warns(self):
+        errors, warnings = self.lint([self.text("t", [0, 0, 50, 10], "Microsoft YaHei")], {"platform": "mac"})
+        self.assertEqual(errors, [])
+        self.assertTrue(any("not a standard mac font" in w for w in warnings))
+
+    def test_bad_platform(self):
+        errors, _ = self.lint([], {"platform": "linux"})
+        self.assertTrue(any("target.platform" in e for e in errors))
+
+    def test_number_and_unit_in_separate_boxes_warns(self):
+        _, warnings = self.lint([self.text("num", [10, 40, 50, 30], text="128"), self.text("unit", [62, 48, 15, 22])])
+        self.assertTrue(any("'num' and 'unit' sit on one line" in w for w in warnings))
+
+    def test_separate_lines_do_not_warn(self):
+        _, warnings = self.lint([self.text("a", [10, 10, 60, 20], text="a"), self.text("b", [10, 40, 60, 20], text="b")])
+        self.assertFalse(any("one line" in w for w in warnings))

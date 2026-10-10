@@ -223,3 +223,43 @@ class FontCheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WeightAndLineTests(unittest.TestCase):
+    def outline_blocks(self, draw, x, y, w, glyph_h, stroke):
+        for gx in range(x, x + w - 20, 34):
+            draw.rectangle([gx, y, gx + 27, y + glyph_h - 1], outline=(17, 17, 17), width=stroke)
+
+    def test_heavier_source_turns_on_bold(self):
+        src, d = canvas()
+        self.outline_blocks(d, 100, 100, 600, 30, 6)
+        ren, d = canvas()
+        self.outline_blocks(d, 100, 100, 600, 30, 3)
+        obj = {"id": "t", "type": "text", "bbox": [96, 95, 620, 40], "text": "x" * 17, "style": {"font_size_pt": 30}}
+        fit = object_fit.measure_object(obj, np.array(src), np.array(ren), 1600, 900)
+        self.assertGreater(fit["weight_ratio"], 1.3)
+        self.assertEqual(fit["weight_fix"], "bold")
+        object_fit.refine_page({"width_px": 1600, "height_px": 900, "objects": [obj]}, [fit])
+        self.assertTrue(obj["style"]["bold"])
+        # Already bold and still lighter than the source: no toggle, a font hint instead.
+        fit = object_fit.measure_object(obj, np.array(src), np.array(ren), 1600, 900)
+        self.assertIsNone(fit["weight_fix"])
+        self.assertIn("heavier", fit["font_hint"])
+
+    def test_neighbour_fragments_do_not_stretch_a_line(self):
+        image, d = canvas(800, 300)
+        text_block(d, 50, 60, 500, 40)
+        # Upper radicals of the next line's glyphs, just below the first line.
+        for gx in range(50, 400, 30):
+            d.rectangle([gx, 103, gx + 12, 110], fill=(17, 17, 17))
+        lines = image_ops.ink_lines(np.array(image), [20, 40, 600, 112])
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0][3] - lines[0][1], 40)
+
+    def test_white_text_on_colored_header(self):
+        image, d = canvas(800, 300)
+        d.rectangle([0, 80, 600, 200], fill=(46, 139, 87))
+        text_block(d, 150, 120, 300, 36, color=(255, 255, 255))
+        lines = image_ops.ink_lines(np.array(image), [100, 60, 520, 220], bg_region=[120, 110, 480, 166])
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0][1:4:2], [120, 156])

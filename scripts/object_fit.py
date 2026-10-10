@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from image_ops import ink_box, ink_lines  # noqa: E402
+from image_ops import dominant_color, ink_box, ink_lines  # noqa: E402
 from pageir_common import pt_per_px  # noqa: E402
 
 
@@ -36,6 +36,8 @@ FONT_SCALE_LIMITS = (0.8, 1.25)
 CHAR_SPACING_LIMITS = (-3.0, 6.0)
 LINE_SPACING_LIMITS = (0.7, 2.5)
 GROW_STEPS = (1.0, 2.0, 4.0)
+WEIGHT_TOLERANCE = 0.15  # stroke ink density, source vs render
+WEIGHT_INK_THRESHOLD = 60
 
 
 def position_tolerance(page_w: float) -> float:
@@ -71,13 +73,24 @@ def object_region(obj: dict, page_w: float, page_h: float, grow: float = 1.0):
     if w * h > MAX_PAGE_COVERAGE * page_w * page_h:
         return None  # background-sized panels have no surrounding border to measure against
     if obj.get("type") == "text":
-        # Margin from the font size, not the box: tall multi-line boxes would
-        # otherwise reach out to the outline of an enclosing card.
-        font_pt = float((obj.get("style") or {}).get("font_size_pt", 18))
-        pad = max(4.0, 0.5 * font_pt / pt_per_px(page_w, page_h)) * grow
+        # Margins from the font size, not the box: tall multi-line boxes would
+        # otherwise reach out to an enclosing card. Vertically tighter, so the
+        # next line of text above or below stays out.
+        em = _em_px(obj, page_w, page_h)
+        # Horizontal slack also covers single-line text that overflows its box.
+        pad_x = max(4.0, 0.6 * em + 0.15 * w) * grow
+        pad_y = max(3.0, 0.3 * em) * grow
+        return [x - pad_x, y - pad_y, x + w + pad_x, y + h + pad_y]
     else:
         pad = max(6.0, 0.05 * min(w, h)) * grow
     return [x - pad, y - pad, x + w + pad, y + h + pad]
+
+
+def _em_px(obj: dict, page_w: float, page_h: float) -> float:
+    style = obj.get("style") or {}
+    sizes = [float(style.get("font_size_pt", 18))]
+    sizes += [float(r["font_size_pt"]) for r in obj.get("runs") or [] if isinstance(r, dict) and "font_size_pt" in r]
+    return max(sizes) / pt_per_px(page_w, page_h)
 
 
 def _touches(box, region, page_w: float, page_h: float) -> bool:
@@ -105,15 +118,52 @@ def _measure_box(obj, source, rendered, page_w, page_h):
     return src, ren
 
 
+def _own_lines(lines, obj, page_w, page_h):
+    """Lines whose vertical centre lies within the text box (plus a little slack).
+
+    Keeps a neighbouring paragraph that reaches into the search window from
+    being measured as part of this object.
+    """
+    x, y, w, h = (float(v) for v in obj["bbox"])
+    slack = 0.3 * _em_px(obj, page_w, page_h)
+    own = [b for b in lines if y - slack <= (b[1] + b[3]) / 2 <= y + h + slack]
+    return own or lines
+
+
 def _measure_lines(obj, source, rendered, page_w, page_h):
     src = ren = []
+    x, y, w, h = (float(v) for v in obj["bbox"])
+    bg_box = [x, y, x + w, y + h]
     for grow in GROW_STEPS:
         region = object_region(obj, page_w, page_h, grow)
-        src = ink_lines(source, region)
-        ren = ink_lines(rendered, region)
+        src = ink_lines(source, region, bg_region=bg_box)
+        ren = ink_lines(rendered, region, bg_region=bg_box)
         if src and ren:
             break
-    return src, ren
+    return _own_lines(src, obj, page_w, page_h), _own_lines(ren, obj, page_w, page_h)
+
+
+def ink_fraction(image: np.ndarray, band, bg_box) -> float | None:
+    """Share of a text-line band covered by glyph ink: a proxy for stroke weight.
+
+    The background is the dominant color inside the text box, as for line finding.
+    """
+    h, w = image.shape[:2]
+    x0, y0, x1, y1 = (int(v) for v in band)
+    inner = image[y0:y1, x0:x1, :3].astype(np.int32)
+    bx0, by0, bx1, by1 = (int(round(v)) for v in bg_box)
+    behind = image[max(0, by0) : min(h, by1), max(0, bx0) : min(w, bx1), :3]
+    if inner.size == 0 or behind.size == 0:
+        return None
+    mask = np.abs(inner - dominant_color(behind)).max(axis=2) > WEIGHT_INK_THRESHOLD
+    return float(mask.mean())
+
+
+def bold_state(obj: dict) -> bool | None:
+    """Object-level boldness, or None when runs set their own weight (mixed emphasis)."""
+    if any(isinstance(r, dict) and "bold" in r for r in obj.get("runs") or []):
+        return None
+    return bool((obj.get("style") or {}).get("bold"))
 
 
 def _union(lines):
@@ -170,8 +220,30 @@ def measure_text(obj: dict, source, rendered, page_w: float, page_h: float, resu
             "pitch_ratio": round(pitch_ratio, 4) if pitch_ratio is not None else None,
         }
     )
+    # Stroke weight: only comparable once glyph sizes match.
+    weight_fix = None
+    if abs(scale_h - 1) <= 0.1:
+        bx, by, bw, bh = (float(v) for v in obj["bbox"])
+        bg_box = [bx, by, bx + bw, by + bh]
+        src_ink, ren_ink = ink_fraction(source, s0, bg_box), ink_fraction(rendered, r0, bg_box)
+        if src_ink and ren_ink:
+            ratio = src_ink / ren_ink
+            result["weight_ratio"] = round(ratio, 3)
+            bold = bold_state(obj)
+            if ratio >= 1 + WEIGHT_TOLERANCE:
+                if bold is False:
+                    weight_fix = "bold"
+                elif bold is True:
+                    result["font_hint"] = "source strokes are heavier than this font's bold; use a heavier family/weight"
+            elif ratio <= 1 - WEIGHT_TOLERANCE:
+                if bold is True:
+                    weight_fix = "regular"
+                elif bold is False:
+                    result["font_hint"] = "source strokes are lighter than this font's regular; use a lighter weight"
+    result["weight_fix"] = weight_fix
     ok = (
         same_lines
+        and weight_fix is None
         and abs(anchor_dx) <= tol
         and abs(anchor_dy) <= tol
         and abs(scale_h - 1) <= SIZE_TOLERANCE
@@ -207,7 +279,7 @@ def measure_object(obj: dict, source: np.ndarray, rendered: np.ndarray, page_w: 
     return result
 
 
-def _error(f: dict) -> float:
+def object_error(f: dict) -> float:
     keys = ("dx0", "dy0", "dx1", "dy1", "anchor_dx", "anchor_dy")
     err = max([abs(f.get(k) or 0) for k in keys] + [0])
     if f.get("scale_h"):
@@ -222,13 +294,16 @@ def measure_page(objects: list[dict], source: np.ndarray, rendered: np.ndarray) 
     fits = [measure_object(obj, source, rendered, page_w, page_h) for obj in objects]
     measured = [f for f in fits if f["status"] in ("ok", "off", "missing_in_render", "extra_in_render")]
     ok = sum(1 for f in measured if f["status"] == "ok")
-    worst = sorted((f for f in measured if f["status"] != "ok"), key=_error, reverse=True)
+    worst = sorted((f for f in measured if f["status"] != "ok"), key=object_error, reverse=True)
     return {
         "tolerance_px": round(position_tolerance(page_w), 2),
         "measured": len(measured),
         "within_tolerance": ok,
         "fit_ratio": round(ok / len(measured), 4) if measured else 1.0,
         "worst": [f["id"] for f in worst[:10]],
+        "font_hints": [
+            {"id": f["id"], "weight_ratio": f.get("weight_ratio"), "hint": f["font_hint"]} for f in fits if f.get("font_hint")
+        ],
         "objects": fits,
     }
 
@@ -274,6 +349,14 @@ def _shape_text(obj: dict, fit: dict, page_w: float, page_h: float, tune_width: 
     if abs(scale_h - 1) > SIZE_TOLERANCE:
         if _scale_fonts(obj, min(max(scale_h, FONT_SCALE_LIMITS[0]), FONT_SCALE_LIMITS[1])):
             return True
+
+    # 1b. Stroke weight.
+    if fit.get("weight_fix") == "bold":
+        style["bold"] = True
+        return True
+    if fit.get("weight_fix") == "regular":
+        style["bold"] = False
+        return True
 
     # 2. Line count (wrapping).
     src_n, ren_n = fit["source_lines"], fit["render_lines"]

@@ -92,6 +92,14 @@ def border_color(crop: np.ndarray) -> np.ndarray:
     return border[inverse.reshape(-1) == best].mean(axis=0)
 
 
+def dominant_color(crop: np.ndarray) -> np.ndarray:
+    """Most common (quantised) color in an RGB crop: the background behind text."""
+    pixels = crop.reshape(-1, 3).astype(np.int32)
+    keys = (pixels // 16) @ np.array([65536, 256, 1])
+    values, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
+    return pixels[inverse.reshape(-1) == int(np.argmax(counts))].mean(axis=0)
+
+
 def ink_box(image: np.ndarray, region, threshold: int = INK_THRESHOLD, ignore_border_ink: bool = False):
     """Bounding box [x0, y0, x1, y1] of pixels that differ from the region's border color.
 
@@ -131,11 +139,14 @@ def ink_box(image: np.ndarray, region, threshold: int = INK_THRESHOLD, ignore_bo
     return [x0 + int(xs[0]), y0 + int(ys[0]), x0 + int(xs[-1]) + 1, y0 + int(ys[-1]) + 1]
 
 
-def ink_lines(image: np.ndarray, region, threshold: int = INK_THRESHOLD) -> list[list[int]]:
+def ink_lines(image: np.ndarray, region, threshold: int = INK_THRESHOLD, bg_region=None) -> list[list[int]]:
     """Text-line bands [x0, y0, x1, y1] inside a region, top to bottom.
 
-    Ink connected to the region border is ignored (enclosing panels, rules).
-    Glyph components are grouped into lines by vertical overlap.
+    The background is the dominant color inside `bg_region` (the text box), so
+    white text on a colored header measures correctly; without it, the region
+    border color is used. Ink connected to the region border is ignored
+    (enclosing panels, rules). Glyph components are grouped into lines by
+    vertical overlap.
     """
     h, w = image.shape[:2]
     x0, y0, x1, y1 = (int(round(v)) for v in region)
@@ -144,7 +155,15 @@ def ink_lines(image: np.ndarray, region, threshold: int = INK_THRESHOLD) -> list
     if x1 - x0 < 3 or y1 - y0 < 3:
         return []
     crop = image[y0:y1, x0:x1, :3].astype(np.int32)
-    mask = np.abs(crop - border_color(crop)).max(axis=2) > threshold
+    bg = None
+    if bg_region is not None:
+        bx0, by0, bx1, by1 = (int(round(v)) for v in bg_region)
+        bx0, by0, bx1, by1 = max(0, bx0), max(0, by0), min(w, bx1), min(h, by1)
+        if bx1 - bx0 >= 2 and by1 - by0 >= 2:
+            bg = dominant_color(image[by0:by1, bx0:bx1, :3])
+    if bg is None:
+        bg = border_color(crop)
+    mask = np.abs(crop - bg).max(axis=2) > threshold
     if mask.sum() < 4:
         return []
     mh, mw = mask.shape
@@ -156,8 +175,15 @@ def ink_lines(image: np.ndarray, region, threshold: int = INK_THRESHOLD) -> list
         ),
         key=lambda b: b[1],
     )
+    if not boxes:
+        return []
+    # Pass 1: lines from full-height glyph components only, so fragments of a
+    # neighbouring line (CJK radicals, punctuation) cannot stretch a line.
+    tallest = max(b[3] for b in boxes)
+    main = [b for b in boxes if b[3] >= 0.4 * tallest]
+    small = [b for b in boxes if b[3] < 0.4 * tallest]
     lines: list[list[int]] = []
-    for bx, by, bw, bh in boxes:
+    for bx, by, bw, bh in main:
         top, bottom = by, by + bh
         for line in lines:
             overlap = min(bottom, line[3]) - max(top, line[1])
@@ -169,7 +195,6 @@ def ink_lines(image: np.ndarray, region, threshold: int = INK_THRESHOLD) -> list
                 break
         else:
             lines.append([bx, top, bx + bw, bottom])
-    # Merging can make two bands overlap (e.g. accents); fold those together.
     lines.sort(key=lambda b: b[1])
     merged: list[list[int]] = []
     for line in lines:
@@ -178,16 +203,17 @@ def ink_lines(image: np.ndarray, region, threshold: int = INK_THRESHOLD) -> list
             merged[-1] = [min(last[0], line[0]), min(last[1], line[1]), max(last[2], line[2]), max(last[3], line[3])]
         else:
             merged.append(line)
-    # Fold tiny bands (i-dots, accents, underscores) into their nearest line.
-    if len(merged) > 1:
-        tallest = max(b[3] - b[1] for b in merged)
-        kept = [b for b in merged if b[3] - b[1] >= 0.4 * tallest]
-        for small in (b for b in merged if b[3] - b[1] < 0.4 * tallest):
-            centre = (small[1] + small[3]) / 2
-            near = min(kept, key=lambda b: abs((b[1] + b[3]) / 2 - centre))
-            near[0], near[1] = min(near[0], small[0]), min(near[1], small[1])
-            near[2], near[3] = max(near[2], small[2]), max(near[3], small[3])
-        merged = kept
+    # Pass 2: small marks (i-dots, punctuation, a small unit after a big
+    # number) join a line only when they sit inside its vertical range; the
+    # rest belong to neighbouring text and are dropped. They widen a line but
+    # never change its height.
+    for bx, by, bw, bh in small:
+        for line in merged:
+            height = line[3] - line[1]
+            if line[1] - 0.25 * height <= by and by + bh <= line[3] + 0.1 * height:
+                line[0] = min(line[0], bx)
+                line[2] = max(line[2], bx + bw)
+                break
     return [[x0 + b[0], y0 + b[1], x0 + b[2], y0 + b[3]] for b in merged]
 
 

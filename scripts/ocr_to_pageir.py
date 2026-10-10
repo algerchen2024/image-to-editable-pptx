@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pageir_common import pt_per_px  # noqa: E402
+from pageir_common import DEFAULT_FONTS, pt_per_px  # noqa: E402
 
 
 CJK_RE = re.compile(r"[　-〿㐀-䶿一-鿿豈-﫿＀-￯]")
@@ -83,7 +83,7 @@ def draft_text_object(line: dict, index: int, page_w: float, page_h: float, font
     }
 
 
-def build_page_ir(ocr: dict, fonts: dict, image=None, background: str | None = None) -> dict:
+def build_page_ir(ocr: dict, fonts: dict, image=None, background: str | None = None, platform: str = "mac") -> dict:
     page_w = float(ocr["width_px"])
     page_h = float(ocr["height_px"])
     objects = [
@@ -97,6 +97,8 @@ def build_page_ir(ocr: dict, fonts: dict, image=None, background: str | None = N
         background = page_background(image)
     return {
         "schema_version": "1.1",
+        "target": {"platform": platform, "installed_fonts": []},
+        "default_font_face": fonts["latin"],
         "pages": [
             {
                 "id": "slide-1",
@@ -114,8 +116,14 @@ def main() -> int:
     parser.add_argument("ocr_json", help="output of ocr_lines.py")
     parser.add_argument("--image", help="source image; enables sampled text and background colors")
     parser.add_argument("--background", help="force the page background, e.g. #FFFFFF for a white rebuild")
-    parser.add_argument("--font-cjk", default="Microsoft YaHei")
-    parser.add_argument("--font-latin", default="Arial")
+    parser.add_argument(
+        "--target",
+        choices=sorted(DEFAULT_FONTS),
+        default="mac",
+        help="platform the PPTX will be opened on; picks fonts that exist there (default: mac)",
+    )
+    parser.add_argument("--font-cjk", help="override the CJK font (default: PingFang SC on mac, Microsoft YaHei on windows)")
+    parser.add_argument("--font-latin", help="override the Latin/number font (default: Helvetica Neue on mac, Arial on windows)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -128,7 +136,11 @@ def main() -> int:
         image = np.array(Image.open(args.image).convert("RGB"))
         if image.shape[1] != int(ocr["width_px"]) or image.shape[0] != int(ocr["height_px"]):
             parser.error("--image size does not match the OCR source size")
-    payload = build_page_ir(ocr, {"cjk": args.font_cjk, "latin": args.font_latin}, image, args.background)
+    fonts = {
+        "cjk": args.font_cjk or DEFAULT_FONTS[args.target]["cjk"],
+        "latin": args.font_latin or DEFAULT_FONTS[args.target]["latin"],
+    }
+    payload = build_page_ir(ocr, fonts, image, args.background, args.target)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

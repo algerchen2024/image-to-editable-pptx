@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from object_fit import refine_payload, substituted_fonts  # noqa: E402
+from object_fit import object_error, refine_payload, substituted_fonts  # noqa: E402
 from render_compare import run_compare  # noqa: E402
 from validate_page_ir import validate_page_ir  # noqa: E402
 
@@ -44,12 +44,22 @@ def compile_ir(payload: dict, ir_path: Path, pptx_path: Path) -> None:
         raise RuntimeError(f"compile failed: {proc.stderr or proc.stdout}")
 
 
-def score(report: dict) -> tuple[float, float]:
-    """Higher is better: (object fit ratio, -mean MAE)."""
+def mean_object_error(report: dict) -> float:
+    """Average per-object error in px (capped), so partial progress counts between rounds."""
+    errors = []
+    for slide in report["slides"]:
+        for fit in slide.get("object_fit", {}).get("objects", []):
+            if fit["status"] in ("ok", "off", "missing_in_render", "extra_in_render"):
+                errors.append(min(object_error(fit), 50.0))
+    return sum(errors) / len(errors) if errors else 0.0
+
+
+def score(report: dict) -> tuple[float, float, float]:
+    """Higher is better: (object fit ratio, -mean object error, -mean MAE)."""
     slides = report["slides"]
     mae = sum(s["normalized_mae"] for s in slides) / max(len(slides), 1)
     fit = report.get("object_fit_ratio")
-    return (fit if fit is not None else 0.0, -mae)
+    return (fit if fit is not None else 0.0, -round(mean_object_error(report), 2), -mae)
 
 
 def main() -> int:
@@ -86,7 +96,8 @@ def main() -> int:
                 {
                     "round": round_no,
                     "object_fit_ratio": report.get("object_fit_ratio"),
-                    "mean_mae": round(-current[1], 5),
+                    "mean_object_error_px": round(-current[1], 2),
+                    "mean_mae": round(-current[2], 5),
                     "edge_f1": [round(s["edge_f1"], 4) for s in report["slides"]],
                 }
             )
@@ -124,6 +135,7 @@ def main() -> int:
                 "slide": s["slide"],
                 "normalized_mae": round(s["normalized_mae"], 4),
                 "edge_f1": round(s["edge_f1"], 4),
+                "font_hints": s.get("object_fit", {}).get("font_hints", []),
                 "objects_off": [
                     f["id"] for f in s.get("object_fit", {}).get("objects", []) if f["status"] not in ("ok", "no_ink", "not_measured")
                 ],
