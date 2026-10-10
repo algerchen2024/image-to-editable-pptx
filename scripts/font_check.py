@@ -15,7 +15,11 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pageir_common import FONT_STYLE_NAMES, OFFICE_FONTS, PLATFORM_FONTS, choose_font  # noqa: E402
 
 
 CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
@@ -51,6 +55,44 @@ def cjk_font_families() -> list[str] | None:
             if name.strip():
                 families.add(name.strip())
     return sorted(families)
+
+
+def render_families() -> set[str] | None:
+    """Every family name (including localized names) the render environment has, or None without fontconfig."""
+    out = _run(["fc-list", ":", "family"])
+    if out is None:
+        return None
+    names: set[str] = set()
+    for line in out.splitlines():
+        names.update(n.strip().replace("\\-", "-") for n in line.split(",") if n.strip())
+    return names
+
+
+def font_plan(platform: str, installed: set[str], preferences: dict | None = None) -> dict:
+    """Which target-machine fonts the render environment also has, and the font to use per style.
+
+    `exact_match_fonts` are fonts on the user's machine (platform standard,
+    Office, or user-installed) that this environment can render: text in them
+    is verified exactly as the user will see it.
+    """
+    families = render_families()
+    if families is None:
+        return {"fontconfig_available": False}
+    lowered = {f.lower() for f in families}
+    platform_key = platform if platform in PLATFORM_FONTS else "mac"
+    target_fonts = PLATFORM_FONTS[platform_key] | OFFICE_FONTS | set(installed)
+    exact = sorted(f for f in target_fonts if f.lower() in lowered)
+    recommended = {}
+    for style in FONT_STYLE_NAMES:
+        font, is_exact = choose_font(style, platform_key, installed, preferences, families)
+        recommended[style] = {"font": font, "exact_render": is_exact}
+    return {
+        "fontconfig_available": True,
+        "target_platform": platform_key,
+        "installed_fonts": sorted(installed),
+        "exact_match_fonts": exact,
+        "recommended": recommended,
+    }
 
 
 def resolve_font(name: str) -> str | None:

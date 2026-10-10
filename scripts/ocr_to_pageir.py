@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pageir_common import DEFAULT_FONTS, pt_per_px  # noqa: E402
+from pageir_common import DEFAULT_FONTS, FONT_STYLE_NAMES, pt_per_px  # noqa: E402
 
 
 CJK_RE = re.compile(r"[　-〿㐀-䶿一-鿿豈-﫿＀-￯]")
@@ -83,7 +83,15 @@ def draft_text_object(line: dict, index: int, page_w: float, page_h: float, font
     }
 
 
-def build_page_ir(ocr: dict, fonts: dict, image=None, background: str | None = None, platform: str = "mac") -> dict:
+def build_page_ir(
+    ocr: dict,
+    fonts: dict,
+    image=None,
+    background: str | None = None,
+    platform: str = "mac",
+    installed: list[str] | None = None,
+    preferences: dict | None = None,
+) -> dict:
     page_w = float(ocr["width_px"])
     page_h = float(ocr["height_px"])
     objects = [
@@ -97,7 +105,11 @@ def build_page_ir(ocr: dict, fonts: dict, image=None, background: str | None = N
         background = page_background(image)
     return {
         "schema_version": "1.1",
-        "target": {"platform": platform, "installed_fonts": []},
+        "target": {
+            "platform": platform,
+            "installed_fonts": sorted(installed or []),
+            **({"font_preferences": preferences} if preferences else {}),
+        },
         "default_font_face": fonts["latin"],
         "pages": [
             {
@@ -122,8 +134,24 @@ def main() -> int:
         default="mac",
         help="platform the PPTX will be opened on; picks fonts that exist there (default: mac)",
     )
-    parser.add_argument("--font-cjk", help="override the CJK font (default: PingFang SC on mac, Microsoft YaHei on windows)")
-    parser.add_argument("--font-latin", help="override the Latin/number font (default: Helvetica Neue on mac, Arial on windows)")
+    parser.add_argument(
+        "--installed-fonts",
+        default="",
+        help="comma-separated fonts the user has installed on the target machine, e.g. 'Microsoft YaHei,STKaiti'",
+    )
+    parser.add_argument(
+        "--prefer",
+        default="",
+        help="user font per style, e.g. 'sans=Microsoft YaHei,kai=STKaiti' (styles: " + ", ".join(FONT_STYLE_NAMES) + ")",
+    )
+    parser.add_argument(
+        "--cjk-style",
+        choices=["sans", "kai", "song", "fangsong"],
+        default="sans",
+        help="typeface style of the slide's Chinese text: sans (黑体), kai (楷体), song (宋体), fangsong (仿宋)",
+    )
+    parser.add_argument("--font-cjk", help="override the chosen CJK font")
+    parser.add_argument("--font-latin", help="override the chosen Latin/number font")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -136,15 +164,35 @@ def main() -> int:
         image = np.array(Image.open(args.image).convert("RGB"))
         if image.shape[1] != int(ocr["width_px"]) or image.shape[0] != int(ocr["height_px"]):
             parser.error("--image size does not match the OCR source size")
-    fonts = {
-        "cjk": args.font_cjk or DEFAULT_FONTS[args.target]["cjk"],
-        "latin": args.font_latin or DEFAULT_FONTS[args.target]["latin"],
-    }
-    payload = build_page_ir(ocr, fonts, image, args.background, args.target)
+    installed = sorted({f.strip() for f in args.installed_fonts.split(",") if f.strip()})
+    preferences = {}
+    for item in filter(None, (s.strip() for s in args.prefer.split(","))):
+        style, _, font = item.partition("=")
+        if style.strip() not in FONT_STYLE_NAMES or not font.strip():
+            parser.error(f"--prefer entry '{item}' must look like style=Font Name")
+        preferences[style.strip()] = font.strip()
+    from font_check import font_plan
+
+    plan = font_plan(args.target, set(installed), preferences)
+    recommended = plan.get("recommended") or {}
+
+    def pick(style: str) -> str:
+        if style in recommended:
+            return recommended[style]["font"]
+        return preferences.get(style) or DEFAULT_FONTS[args.target]["cjk" if style != "latin_sans" else "latin"]
+
+    fonts = {"cjk": args.font_cjk or pick(args.cjk_style), "latin": args.font_latin or pick("latin_sans")}
+    payload = build_page_ir(ocr, fonts, image, args.background, args.target, installed, preferences)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"output": str(out), "text_objects": len(payload["pages"][0]["objects"])}, ensure_ascii=False))
+    exact = {s: recommended[s]["exact_render"] for s in (args.cjk_style, "latin_sans") if s in recommended}
+    print(
+        json.dumps(
+            {"output": str(out), "text_objects": len(payload["pages"][0]["objects"]), "fonts": fonts, "exact_render": exact},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

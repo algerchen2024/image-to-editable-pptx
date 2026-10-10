@@ -144,7 +144,11 @@ python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/lo
 python3 scripts/install_fonts.py fonts/                                                          # optional: render with the exact delivery font
 python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # measured panels, borders, rules
 python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # compile, compare, auto-correct
+python3 scripts/delivery_gate.py quality                                                         # HIGH / CLOSE / FAIL per slide
+python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out deck.pptx          # join finished slides
 ```
+
+Several images are converted one slide at a time with the full workflow each. `delivery_gate.py` refuses slides that skipped the fidelity loop, and flags slides where source content is missing from the reconstruction.
 
 `fidelity_loop.py` compiles the PageIR, renders it, measures every object against the source (edges for shapes, line by line for text), and corrects position, size, font size, wrapping, line spacing and letter spacing until objects match within 2 px. Image tools need only numpy and Pillow; OpenCV is not required.
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pageir_common import font_issue, is_hex_color, page_ir_font_names, target_of  # noqa: E402
+from pageir_common import FONT_STYLE_NAMES, font_issue, is_hex_color, page_ir_font_names, target_of  # noqa: E402
 
 
 SCHEMA_VERSIONS = {"1.0", "1.1"}
@@ -277,6 +277,11 @@ def validate_fonts(payload: dict) -> tuple[list[str], list[str]]:
         fonts = target.get("installed_fonts", [])
         if not isinstance(fonts, list) or not all(isinstance(f, str) for f in fonts):
             errors.append("target.installed_fonts must be an array of font names")
+        prefs = target.get("font_preferences", {})
+        if not isinstance(prefs, dict) or not all(
+            k in FONT_STYLE_NAMES and isinstance(v, str) and v.strip() for k, v in prefs.items()
+        ):
+            errors.append(f"target.font_preferences must map styles {list(FONT_STYLE_NAMES)} to font names")
     platform, installed = target_of(payload)
     for name in sorted(page_ir_font_names(payload)):
         issue = font_issue(name, platform, installed)

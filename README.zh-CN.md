@@ -149,7 +149,11 @@ python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/lo
 python3 scripts/install_fonts.py fonts/                                                          # 可选：用与交付一致的字体渲染
 python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # 实测面板、边框、分隔线
 python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # 编译、比对、自动校正
+python3 scripts/delivery_gate.py quality                                                         # 每页评级：HIGH / CLOSE / FAIL
+python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out deck.pptx          # 把完成的各页合成一份
 ```
+
+多张图片会逐页处理，每页都走完整流程。`delivery_gate.py` 会拒绝没跑校正循环的页面，并标出原图里有、重建版里漏掉的内容。
 
 `fidelity_loop.py` 会编译 PageIR、渲染、把每个对象与原图逐一测量比对（形状按四条边，文字逐行），并自动校正位置、尺寸、字号、换行、行距和字间距，直到对象误差在 2 像素以内。图像工具只依赖 numpy 和 Pillow，不需要 OpenCV。
 

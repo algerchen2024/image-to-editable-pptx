@@ -116,6 +116,12 @@ class FidelityLoopTests(unittest.TestCase):
             self.assertAlmostEqual(got["sub"]["font_size_pt"], 15, delta=0.5)
             self.assertAlmostEqual(got["title"]["font_size_pt"], 40, delta=1)
 
+            gate = subprocess.run(
+                [sys.executable, str(SCRIPTS / "delivery_gate.py"), str(tmp / "q"), "--json"], capture_output=True, text=True
+            )
+            self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+            self.assertEqual(json.loads(gate.stdout)[0]["level"], "HIGH")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -263,3 +263,98 @@ class WeightAndLineTests(unittest.TestCase):
         lines = image_ops.ink_lines(np.array(image), [100, 60, 520, 220], bg_region=[120, 110, 480, 166])
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0][1:4:2], [120, 156])
+
+
+class FontProfileTests(unittest.TestCase):
+    RENDER = {"Microsoft YaHei", "微软雅黑", "STKaiti", "华文楷体", "DejaVu Sans", "Liberation Sans"}
+
+    def test_infer_style(self):
+        from pageir_common import infer_style
+
+        self.assertEqual(
+            [infer_style(n) for n in ("STKaiti", "Microsoft YaHei", "STFangsong", "Songti SC", "LXGW WenKai", "Arial")],
+            ["kai", "sans", "fangsong", "song", "kai", None],
+        )
+
+    def test_choose_prefers_exact_fonts_of_the_same_style(self):
+        from pageir_common import choose_font
+
+        installed = {"Microsoft YaHei", "STKaiti"}
+        self.assertEqual(choose_font("sans", "mac", installed, None, self.RENDER), ("Microsoft YaHei", True))
+        self.assertEqual(choose_font("kai", "mac", installed, None, self.RENDER), ("STKaiti", True))
+        # Without installed fonts the mac default stays, rendered with a substitute.
+        self.assertEqual(choose_font("sans", "mac", set(), None, self.RENDER), ("PingFang SC", False))
+        # No exact 宋体 here: keep the style, never fall back to another style's exact font.
+        self.assertEqual(choose_font("song", "mac", installed, None, self.RENDER), ("Songti SC", False))
+
+    def test_preference_wins(self):
+        from pageir_common import choose_font
+
+        self.assertEqual(choose_font("kai", "mac", set(), {"kai": "LXGW WenKai"}, self.RENDER), ("LXGW WenKai", False))
+
+    def test_font_plan_lists_exact_matches(self):
+        with mock.patch.object(font_check, "render_families", return_value=self.RENDER):
+            plan = font_check.font_plan("mac", {"Microsoft YaHei", "STKaiti"})
+        self.assertEqual(plan["exact_match_fonts"], ["Microsoft YaHei", "STKaiti"])
+        self.assertEqual(plan["recommended"]["sans"], {"font": "Microsoft YaHei", "exact_render": True})
+        self.assertEqual(plan["recommended"]["kai"], {"font": "STKaiti", "exact_render": True})
+        self.assertFalse(plan["recommended"]["latin_sans"]["exact_render"])
+
+
+class BatchToolTests(unittest.TestCase):
+    def test_uncovered_ink_finds_left_out_content(self):
+        import tempfile
+
+        import delivery_gate
+
+        image, d = canvas()
+        d.rectangle([100, 100, 400, 200], fill=(31, 78, 121))
+        d.rectangle([900, 500, 1100, 600], fill=(240, 90, 40))
+        page = {"width_px": 1600, "height_px": 900, "objects": [{"id": "a", "type": "rect", "bbox": [100, 100, 301, 101]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "s.png"
+            image.save(path)
+            share, regions = delivery_gate.uncovered_ink(path, page)
+            self.assertGreater(share, 0.3)
+            self.assertTrue(any(abs(r[0] - 900) <= 8 and abs(r[1] - 500) <= 8 for r in regions))
+            page["objects"].append({"id": "b", "type": "rect", "bbox": [900, 500, 201, 101]})
+            self.assertEqual(delivery_gate.uncovered_ink(path, page)[0], 0.0)
+
+    def test_gate_fails_slide_without_fidelity_loop(self):
+        import tempfile
+
+        import delivery_gate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            row = delivery_gate.check_slide(Path(tmp), 0.9)
+        self.assertEqual(row["level"], "FAIL")
+        self.assertIn("fidelity_loop.py was not run", row["issues"][0])
+
+    def test_assemble_renames_pages_and_rejects_other_ratios(self):
+        import json as _json
+        import tempfile
+
+        import assemble_deck
+
+        def write(folder, w, h, platform="mac", fonts=()):
+            folder.mkdir()
+            path = folder / "page_ir.best.json"
+            path.write_text(_json.dumps({
+                "schema_version": "1.1",
+                "target": {"platform": platform, "installed_fonts": list(fonts)},
+                "pages": [{"id": "slide-1", "width_px": w, "height_px": h, "objects": [
+                    {"id": "img", "type": "image", "bbox": [0, 0, 10, 10], "path": "assets/a.png"}]}],
+            }), encoding="utf-8")
+            return path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            a = write(tmp / "s1", 1600, 900, fonts=["STKaiti"])
+            b = write(tmp / "s2", 1920, 1080, fonts=["Microsoft YaHei"])
+            deck = assemble_deck.assemble([a, b])
+            self.assertEqual([p["id"] for p in deck["pages"]], ["slide-01", "slide-02"])
+            self.assertEqual(deck["target"]["installed_fonts"], ["Microsoft YaHei", "STKaiti"])
+            self.assertEqual(deck["pages"][1]["objects"][0]["path"], str((tmp / "s2" / "assets" / "a.png").resolve()))
+            c = write(tmp / "s3", 900, 1600)
+            with self.assertRaises(ValueError):
+                assemble_deck.assemble([a, c])

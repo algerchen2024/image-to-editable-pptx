@@ -8,6 +8,21 @@ The skill appears in ChatGPT as "GPT Image to Editable PPTX V<major>". Versions 
 
 The PageIR `schema_version` (currently 1.1) is the version of the internal JSON format and is numbered independently.
 
+## [5.3.0] - 2026-10-10 (V5.3)
+
+Font profiles and batch quality. Users with their own fonts get exact renders without anything user-specific in the skill. Several images no longer lead to fast, low-fidelity conversions.
+
+### Added
+
+- Typeface styles (`sans` 黑体, `kai` 楷体, `song` 宋体, `fangsong` 仿宋, `latin_sans`, `latin_serif`) with per-platform candidates. `choose_font` prefers, in order: the user's stated font, then a font of that style that is both on the user's machine and in the render environment (exact render), then the platform default. It never switches style to get an exact render.
+- `target.font_preferences` in PageIR; `runtime_check.py --target --installed-fonts` reports `fonts.exact_match_fonts` and `fonts.recommended` per style; `ocr_to_pageir.py --installed-fonts --prefer --cjk-style`.
+- SKILL.md: read the user's font profile from the conversation, custom instructions, or memory; style table; match the source's typeface style.
+- `delivery_gate.py`: grades each slide HIGH / CLOSE / FAIL. Slides that skipped the fidelity loop, have font or PageIR errors, or fail inspection FAIL. Slides with object fit < 0.9 or > 3% uncovered source content are CLOSE, with the missing regions listed.
+- `assemble_deck.py`: join per-slide results into one deck (same aspect ratio; fonts and preferences merged).
+- SKILL.md: high fidelity is the default and never traded for speed. Batch requests run the full workflow one slide at a time, each in its own folder. Slides that cannot be finished are listed, never done at lower quality.
+- `fidelity_loop.py` writes `fidelity_summary.json` and absolute asset paths in `page_ir.best.json`.
+- Text measurement widens its window when glyphs are clipped at its side (overflowing single-line titles).
+
 ## [5.2.0] - 2026-10-10 (V5.2)
 
 From a real ChatGPT run (WorkBuddy slide): the deck used the sandbox font Noto Sans CJK SC, which a Mac or Windows PowerPoint does not have. Numbers and units sat in separate boxes and collided once the font changed. Headings were lighter than the source, and the loop's text measurement was thrown off by neighbouring lines and colored headers.

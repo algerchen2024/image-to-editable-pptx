@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from font_check import cjk_font_families  # noqa: E402
+from font_check import cjk_font_families, font_plan  # noqa: E402
 
 
 PYTHON_MODULES = {
@@ -77,7 +77,7 @@ def node_has_pptxgenjs(node: str | None) -> dict[str, Any]:
     return {"available": True, "version": proc.stdout.strip() or "available"}
 
 
-def build_report(ocr_lang: str) -> dict[str, Any]:
+def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None = None) -> dict[str, Any]:
     modules = {name: check_module(name, module) for name, module in PYTHON_MODULES.items()}
     executables = {name: shutil.which(name) for name in ("python3", "node", "tesseract", "pdftoppm", "soffice", "libreoffice")}
     langs = tesseract_languages(executables["tesseract"])
@@ -104,6 +104,7 @@ def build_report(ocr_lang: str) -> dict[str, Any]:
         "ocr_languages_missing": missing_langs,
         "cjk_fonts": cjk_fonts,
         "cjk_render_ready": bool(cjk_fonts),
+        "fonts": font_plan(target, installed or set()),
         "notes": [
             "No OpenCV needed: render comparison and fidelity_loop use numpy + Pillow only.",
             "cjk_render_ready=false means Chinese renders blank; install a CJK font (Noto Sans CJK, "
@@ -117,8 +118,15 @@ def build_report(ocr_lang: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ocr-lang", default="eng", help="Tesseract language expression, e.g. chi_sim+eng")
+    parser.add_argument("--target", choices=["mac", "windows"], default="mac", help="platform that opens the PPTX")
+    parser.add_argument(
+        "--installed-fonts",
+        default="",
+        help="comma-separated fonts the user has installed on that machine, e.g. 'Microsoft YaHei,STKaiti'",
+    )
     args = parser.parse_args()
-    report = build_report(args.ocr_lang)
+    installed = {f.strip() for f in args.installed_fonts.split(",") if f.strip()}
+    report = build_report(args.ocr_lang, args.target, installed)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["ready_core"] else 2
 

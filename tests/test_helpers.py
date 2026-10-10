@@ -81,6 +81,19 @@ class OcrToPageIrTests(unittest.TestCase):
         self.assertEqual(payload["pages"][0]["background"], "#FFFFFF")
         self.assertEqual(validate_page_ir.validate_page_ir(payload, ROOT), [])
 
+    def test_profile_is_recorded_in_target(self):
+        ocr = {"width_px": 1600, "height_px": 900, "lines": [{"text": "楷体标题", "bbox": [70, 60, 400, 44], "confidence": 92}]}
+        payload = ocr_to_pageir.build_page_ir(
+            ocr, {"cjk": "STKaiti", "latin": "Arial"}, platform="mac",
+            installed=["STKaiti", "Microsoft YaHei"], preferences={"kai": "STKaiti"},
+        )
+        self.assertEqual(
+            payload["target"],
+            {"platform": "mac", "installed_fonts": ["Microsoft YaHei", "STKaiti"], "font_preferences": {"kai": "STKaiti"}},
+        )
+        self.assertEqual(payload["pages"][0]["objects"][0]["style"]["font_face"], "STKaiti")
+        self.assertEqual(validate_page_ir.validate_page_ir_detailed(payload, ROOT), ([], []))
+
     def test_mac_target_defaults(self):
         ocr = {"width_px": 1600, "height_px": 900, "lines": [{"text": "标题 Title", "bbox": [70, 60, 400, 44], "confidence": 92}]}
         fonts = pageir_common.DEFAULT_FONTS["mac"]

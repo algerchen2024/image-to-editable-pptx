@@ -130,6 +130,26 @@ def _own_lines(lines, obj, page_w, page_h):
     return own or lines
 
 
+def _side_clipped(image, region, lines, bg_box, page_w) -> bool:
+    """True when glyph ink on these lines continues past the window's left/right edge."""
+    if not lines:
+        return False
+    h, w = image.shape[:2]
+    x0, x1 = int(max(0, region[0])), int(min(page_w, region[2]))
+    y0 = max(0, int(min(b[1] for b in lines)))
+    y1 = min(h, int(max(b[3] for b in lines)))
+    bx0, by0, bx1, by1 = (int(round(v)) for v in bg_box)
+    behind = image[max(0, by0) : min(h, by1), max(0, bx0) : min(w, bx1), :3]
+    if behind.size == 0 or y1 <= y0:
+        return False
+    bg = dominant_color(behind)
+    for cols, at_page_edge in ((slice(x0, x0 + 2), x0 <= 0), (slice(max(x1 - 2, 0), x1), x1 >= page_w)):
+        strip = image[y0:y1, cols, :3].astype(np.int32)
+        if not at_page_edge and strip.size and (np.abs(strip - bg).max(axis=2) > 48).any():
+            return True
+    return False
+
+
 def _measure_lines(obj, source, rendered, page_w, page_h):
     src = ren = []
     x, y, w, h = (float(v) for v in obj["bbox"])
@@ -138,7 +158,8 @@ def _measure_lines(obj, source, rendered, page_w, page_h):
         region = object_region(obj, page_w, page_h, grow)
         src = ink_lines(source, region, bg_region=bg_box)
         ren = ink_lines(rendered, region, bg_region=bg_box)
-        if src and ren:
+        clipped = _side_clipped(source, region, src, bg_box, page_w) or _side_clipped(rendered, region, ren, bg_box, page_w)
+        if src and ren and not clipped:
             break
     return _own_lines(src, obj, page_w, page_h), _own_lines(ren, obj, page_w, page_h)
 

@@ -150,3 +150,12 @@ class FontAndLayoutLintTests(unittest.TestCase):
     def test_separate_lines_do_not_warn(self):
         _, warnings = self.lint([self.text("a", [10, 10, 60, 20], text="a"), self.text("b", [10, 40, 60, 20], text="b")])
         self.assertFalse(any("one line" in w for w in warnings))
+
+
+class FontPreferenceTests(unittest.TestCase):
+    def test_preferences_are_validated(self):
+        payload = page([])
+        payload["target"] = {"platform": "mac", "installed_fonts": ["STKaiti"], "font_preferences": {"kai": "STKaiti"}}
+        self.assertEqual(module.validate_page_ir(payload, ROOT), [])
+        payload["target"]["font_preferences"] = {"handwriting": "STKaiti"}
+        self.assertTrue(any("font_preferences" in e for e in module.validate_page_ir(payload, ROOT)))

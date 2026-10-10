@@ -62,6 +62,16 @@ def score(report: dict) -> tuple[float, float, float]:
     return (fit if fit is not None else 0.0, -round(mean_object_error(report), 2), -mae)
 
 
+def absolutize_assets(payload: dict, base_dir: Path) -> dict:
+    """Copy of payload with relative image paths made absolute, so the PageIR works from any folder."""
+    out = json.loads(json.dumps(payload))
+    for page in out.get("pages", []):
+        for obj in page.get("objects", []):
+            if obj.get("type") == "image" and isinstance(obj.get("path"), str) and not Path(obj["path"]).is_absolute():
+                obj["path"] = str((base_dir / obj["path"]).resolve())
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("page_ir")
@@ -120,13 +130,16 @@ def main() -> int:
     assert best is not None
     _, best_payload, best_pptx, best_report = best
     best_ir = workdir / "page_ir.best.json"
-    best_ir.write_text(json.dumps(best_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    best_ir.write_text(
+        json.dumps(absolutize_assets(best_payload, ir_path.parent), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     shutil.copy2(best_pptx, args.out)
     # Final artefacts (overlay, heatmap, metrics) for the delivered deck.
     final = run_compare(sources, Path(args.out), workdir / "final", best_payload)
     (workdir / "final" / "metrics.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = {
-        "output": args.out,
+        "output": str(Path(args.out).resolve()),
+        "sources": [str(s) for s in sources],
         "best_page_ir": str(best_ir),
         "rounds": history,
         "object_fit_ratio": final.get("object_fit_ratio"),
@@ -145,6 +158,8 @@ def main() -> int:
         "problems": final["problems"],
         "next": "Copy page_ir.best.json over your PageIR, then review final/overlay.png and the objects_off list.",
     }
+    # Machine-readable record for delivery_gate.py.
+    (workdir / "fidelity_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if not final["problems"] else 2
 

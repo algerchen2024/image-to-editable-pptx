@@ -41,6 +41,15 @@ Text is also checked for stroke weight. When the source is clearly heavier or li
 
 `objects_off` / `worst` list what does not match yet. Every entry must be fixed or explained in the delivery report. Typical explanations: a substituted font (see `fonts.substitutions`), a hairline whose anti-aliasing differs, an image asset edge.
 
+## Delivery gate
+
+Run `scripts/delivery_gate.py` with each slide's fidelity-loop workdir before delivering. It grades every slide:
+- **HIGH**: may be called high fidelity.
+- **CLOSE**: object fit below 0.9, or more than 3% of the source's visible content not covered by any PageIR object, i.e. something was left out; it lists the regions.
+- **FAIL**: the fidelity loop never ran, PageIR or font errors, inspection failed, or render problems.
+
+FAIL slides are not delivered. Put the gate table in the delivery report.
+
 ## Render comparison
 
 The provided comparison script reports, per slide:

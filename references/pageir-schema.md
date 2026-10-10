@@ -24,6 +24,8 @@ Schema `1.1` is a backward-compatible superset of `1.0`: every 1.0 file is a val
 "target": {"platform": "mac", "installed_fonts": ["Noto Sans CJK SC"]}
 ```
 
+Optionally add `"font_preferences": {"sans": "Microsoft YaHei", "kai": "STKaiti"}`: the user's font per typeface style. Styles: `sans`, `kai`, `song`, `fangsong`, `latin_sans`, `latin_serif`.
+
 `target` describes where the PPTX will be opened. `platform` is `mac`, `windows`, or `any`. `installed_fonts` lists extra fonts the user has installed there.
 
 The validator then checks every `font_face`, including run fonts and `default_font_face`:
