@@ -6,19 +6,27 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pageir_common import FONT_STYLE_NAMES, font_issue, is_hex_color, page_ir_font_names, target_of  # noqa: E402
 
+
+SCHEMA_VERSIONS = {"1.0", "1.1"}
 ALLOWED_TYPES = {"text", "rect", "round_rect", "ellipse", "triangle", "chevron", "line", "image"}
+SHAPE_TYPES = {"rect", "round_rect", "ellipse", "triangle", "chevron"}
 ALLOWED_ALIGN = {"left", "center", "right"}
 ALLOWED_VALIGN = {"top", "mid", "bottom"}
 ALLOWED_DASH = {"solid", "dash", "dot", "dash_dot"}
 ALLOWED_ARROW = {"none", "triangle"}
+IMAGE_ASPECT_TOLERANCE = 0.02
+PLATFORMS = {"mac", "windows", "any"}
 
 
 def is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and math.isfinite(float(value))
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
 def validate_bbox(bbox: Any, page_w: float, page_h: float, path: str, errors: list[str]) -> None:
@@ -33,16 +41,138 @@ def validate_bbox(bbox: Any, page_w: float, page_h: float, path: str, errors: li
         errors.append(f"{path}.bbox is outside the page")
 
 
-def validate_page_ir(payload: Any, base_dir: Path) -> list[str]:
+def check_color(style: dict, key: str, path: str, errors: list[str], nullable: bool = False) -> None:
+    if key not in style:
+        return
+    value = style[key]
+    if value is None and nullable:
+        return
+    if not is_hex_color(value):
+        errors.append(f"{path}.style.{key} must be a #RGB/#RRGGBB hex color" + (" or null" if nullable else ""))
+
+
+def check_positive(style: dict, key: str, path: str, errors: list[str], allow_zero: bool = False) -> None:
+    if key not in style:
+        return
+    value = style[key]
+    if not is_number(value) or float(value) < 0 or (not allow_zero and float(value) == 0):
+        errors.append(f"{path}.style.{key} must be a {'non-negative' if allow_zero else 'positive'} number")
+
+
+def validate_run_style(style: dict, path: str, errors: list[str]) -> None:
+    check_color(style, "color", path, errors)
+    check_positive(style, "font_size_pt", path, errors)
+    check_positive(style, "line_spacing_multiple", path, errors)
+    check_positive(style, "margin_pt", path, errors, allow_zero=True)
+    if "char_spacing_pt" in style and not is_number(style["char_spacing_pt"]):
+        errors.append(f"{path}.style.char_spacing_pt must be a number")
+    if "font_face" in style and (not isinstance(style["font_face"], str) or not style["font_face"].strip()):
+        errors.append(f"{path}.style.font_face must be a non-empty string")
+
+
+def validate_text(obj: dict, opath: str, errors: list[str]) -> None:
+    runs = obj.get("runs")
+    if runs is not None:
+        if not isinstance(runs, list) or not runs:
+            errors.append(f"{opath}.runs must be a non-empty array")
+        else:
+            for r_idx, run in enumerate(runs):
+                rpath = f"{opath}.runs[{r_idx}]"
+                if not isinstance(run, dict) or not isinstance(run.get("text"), str):
+                    errors.append(f"{rpath}.text must be a string")
+                    continue
+                validate_run_style(run, rpath, errors)
+    elif not isinstance(obj.get("text"), str):
+        errors.append(f"{opath}.text must be a string (or provide runs)")
+    style = obj.get("style", {})
+    if not isinstance(style, dict):
+        errors.append(f"{opath}.style must be an object")
+        return
+    if style.get("align", "left") not in ALLOWED_ALIGN:
+        errors.append(f"{opath}.style.align is invalid")
+    if style.get("valign", "top") not in ALLOWED_VALIGN:
+        errors.append(f"{opath}.style.valign is invalid")
+    validate_run_style(style, opath, errors)
+
+
+def validate_shape(obj: dict, opath: str, errors: list[str]) -> None:
+    style = obj.get("style", {})
+    if not isinstance(style, dict):
+        errors.append(f"{opath}.style must be an object")
+        return
+    check_color(style, "fill", opath, errors, nullable=True)
+    check_color(style, "line", opath, errors, nullable=True)
+    check_positive(style, "line_width_pt", opath, errors, allow_zero=True)
+    if style.get("line_dash", "solid") not in ALLOWED_DASH:
+        errors.append(f"{opath}.style.line_dash is invalid")
+    if "fill_transparency" in style:
+        value = style["fill_transparency"]
+        if not is_number(value) or not 0 <= float(value) <= 100:
+            errors.append(f"{opath}.style.fill_transparency must be between 0 and 100")
+    if "corner_radius_px" in style:
+        if obj.get("type") != "round_rect":
+            errors.append(f"{opath}.style.corner_radius_px is only valid for round_rect")
+        else:
+            check_positive(style, "corner_radius_px", opath, errors, allow_zero=True)
+
+
+def validate_line(obj: dict, opath: str, page_w: float, page_h: float, errors: list[str]) -> None:
+    points = obj.get("points")
+    if not isinstance(points, list) or len(points) != 4 or not all(is_number(v) for v in points):
+        errors.append(f"{opath}.points must be [x1,y1,x2,y2]")
+    else:
+        x1, y1, x2, y2 = [float(v) for v in points]
+        if min(x1, x2) < -1 or min(y1, y2) < -1 or max(x1, x2) > page_w + 1 or max(y1, y2) > page_h + 1:
+            errors.append(f"{opath}.points are outside the page")
+        if x1 == x2 and y1 == y2:
+            errors.append(f"{opath}.points describe a zero-length line")
+    style = obj.get("style", {})
+    if not isinstance(style, dict):
+        errors.append(f"{opath}.style must be an object")
+        return
+    check_color(style, "color", opath, errors)
+    check_positive(style, "width_pt", opath, errors)
+    if style.get("dash", "solid") not in ALLOWED_DASH:
+        errors.append(f"{opath}.style.dash is invalid")
+    if style.get("start_arrow", "none") not in ALLOWED_ARROW or style.get("end_arrow", "none") not in ALLOWED_ARROW:
+        errors.append(f"{opath}.style arrow type is invalid")
+
+
+def image_aspect_warning(obj: dict, image_path: Path, opath: str) -> str | None:
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    bbox = obj.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4 or not all(is_number(v) for v in bbox) or bbox[2] <= 0 or bbox[3] <= 0:
+        return None
+    try:
+        with Image.open(image_path) as image:
+            width, height = image.size
+    except OSError:
+        return f"{opath}.path could not be opened as an image"
+    asset_ratio = width / height
+    frame_ratio = float(bbox[2]) / float(bbox[3])
+    if abs(asset_ratio - frame_ratio) / frame_ratio > IMAGE_ASPECT_TOLERANCE:
+        return (
+            f"{opath} image aspect {asset_ratio:.3f} differs from bbox aspect {frame_ratio:.3f}; "
+            "the asset will be stretched"
+        )
+    return None
+
+
+def validate_page_ir_detailed(payload: Any, base_dir: Path) -> tuple[list[str], list[str]]:
+    """Return (errors, warnings). Warnings do not fail validation."""
     errors: list[str] = []
+    warnings: list[str] = []
     if not isinstance(payload, dict):
-        return ["PageIR root must be an object"]
-    if payload.get("schema_version") != "1.0":
-        errors.append("schema_version must be '1.0'")
+        return ["PageIR root must be an object"], warnings
+    if payload.get("schema_version") not in SCHEMA_VERSIONS:
+        errors.append(f"schema_version must be one of {sorted(SCHEMA_VERSIONS)}")
     pages = payload.get("pages")
     if not isinstance(pages, list) or not pages:
         errors.append("pages must be a non-empty array")
-        return errors
+        return errors, warnings
 
     ratios: list[float] = []
     page_ids: set[str] = set()
@@ -68,8 +198,7 @@ def validate_page_ir(payload: Any, base_dir: Path) -> list[str]:
         page_h = float(page_h)
         ratios.append(page_w / page_h)
 
-        bg = page.get("background", "#FFFFFF")
-        if not isinstance(bg, str) or not bg.startswith("#") or len(bg) not in (4, 7):
+        if not is_hex_color(page.get("background", "#FFFFFF")):
             errors.append(f"{ppath}.background must be a hex color")
 
         objects = page.get("objects")
@@ -93,32 +222,21 @@ def validate_page_ir(payload: Any, base_dir: Path) -> list[str]:
             if obj_type not in ALLOWED_TYPES:
                 errors.append(f"{opath}.type must be one of {sorted(ALLOWED_TYPES)}")
                 continue
+            if "z" in obj and not is_number(obj["z"]):
+                errors.append(f"{opath}.z must be a number")
+            if "rotation_deg" in obj and not is_number(obj["rotation_deg"]):
+                errors.append(f"{opath}.rotation_deg must be a number")
 
             if obj_type == "line":
-                points = obj.get("points")
-                if not isinstance(points, list) or len(points) != 4 or not all(is_number(v) for v in points):
-                    errors.append(f"{opath}.points must be [x1,y1,x2,y2]")
-                else:
-                    x1, y1, x2, y2 = [float(v) for v in points]
-                    if min(x1, x2) < -1 or min(y1, y2) < -1 or max(x1, x2) > page_w + 1 or max(y1, y2) > page_h + 1:
-                        errors.append(f"{opath}.points are outside the page")
-                style = obj.get("style", {})
-                if style.get("dash", "solid") not in ALLOWED_DASH:
-                    errors.append(f"{opath}.style.dash is invalid")
-                if style.get("start_arrow", "none") not in ALLOWED_ARROW or style.get("end_arrow", "none") not in ALLOWED_ARROW:
-                    errors.append(f"{opath}.style arrow type is invalid")
+                validate_line(obj, opath, page_w, page_h, errors)
                 continue
 
             validate_bbox(obj.get("bbox"), page_w, page_h, opath, errors)
 
             if obj_type == "text":
-                if not isinstance(obj.get("text"), str):
-                    errors.append(f"{opath}.text must be a string")
-                style = obj.get("style", {})
-                if style.get("align", "left") not in ALLOWED_ALIGN:
-                    errors.append(f"{opath}.style.align is invalid")
-                if style.get("valign", "top") not in ALLOWED_VALIGN:
-                    errors.append(f"{opath}.style.valign is invalid")
+                validate_text(obj, opath, errors)
+            elif obj_type in SHAPE_TYPES:
+                validate_shape(obj, opath, errors)
             elif obj_type == "image":
                 rel = obj.get("path")
                 if not isinstance(rel, str) or not rel.strip():
@@ -127,13 +245,98 @@ def validate_page_ir(payload: Any, base_dir: Path) -> list[str]:
                     image_path = (base_dir / rel).resolve() if not Path(rel).is_absolute() else Path(rel)
                     if not image_path.exists():
                         errors.append(f"{opath}.path does not exist: {rel}")
+                    else:
+                        warning = image_aspect_warning(obj, image_path, opath)
+                        if warning:
+                            warnings.append(warning)
+
+    errors_fonts, warnings_fonts = validate_fonts(payload)
+    errors += errors_fonts
+    warnings += warnings_fonts
+    for p_idx, page in enumerate(pages):
+        if isinstance(page, dict) and isinstance(page.get("objects"), list):
+            warnings += same_line_text_warnings(page, f"pages[{p_idx}]")
 
     if ratios:
         base = ratios[0]
         for idx, ratio in enumerate(ratios[1:], start=1):
             if abs(ratio - base) / base > 0.001:
                 errors.append(f"pages[{idx}] aspect ratio differs by more than 0.1%")
-    return errors
+    return errors, warnings
+
+
+def validate_fonts(payload: dict) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    target = payload.get("target")
+    if target is not None:
+        if not isinstance(target, dict):
+            return ["target must be an object"], warnings
+        if str(target.get("platform", "any")).lower() not in PLATFORMS:
+            errors.append(f"target.platform must be one of {sorted(PLATFORMS)}")
+        fonts = target.get("installed_fonts", [])
+        if not isinstance(fonts, list) or not all(isinstance(f, str) for f in fonts):
+            errors.append("target.installed_fonts must be an array of font names")
+        prefs = target.get("font_preferences", {})
+        if not isinstance(prefs, dict) or not all(
+            k in FONT_STYLE_NAMES and isinstance(v, str) and v.strip() for k, v in prefs.items()
+        ):
+            errors.append(f"target.font_preferences must map styles {list(FONT_STYLE_NAMES)} to font names")
+    platform, installed = target_of(payload)
+    for name in sorted(page_ir_font_names(payload)):
+        issue = font_issue(name, platform, installed)
+        if issue:
+            (errors if issue[0] == "error" else warnings).append(issue[1])
+    return errors, warnings
+
+
+def _one_line(obj: dict) -> bool:
+    if isinstance(obj.get("runs"), list):
+        text = "".join(str(r.get("text", "")) for r in obj["runs"] if isinstance(r, dict))
+    else:
+        text = str(obj.get("text") or "")
+    return "\n" not in text and bool(text.strip())
+
+
+def same_line_text_warnings(page: dict, ppath: str) -> list[str]:
+    """Separate text objects that read as one line (a number and its unit, a label and its count).
+
+    Positioned independently, they collide or drift apart as soon as the
+    viewer's font differs from the render font. One object with `runs` keeps
+    them flowing together.
+    """
+    boxes = []
+    for obj in page["objects"]:
+        bbox = obj.get("bbox") if isinstance(obj, dict) else None
+        if (
+            obj.get("type") == "text"
+            and _one_line(obj)
+            and not obj.get("rotation_deg")
+            and isinstance(bbox, list)
+            and len(bbox) == 4
+            and all(is_number(v) for v in bbox)
+        ):
+            boxes.append((str(obj.get("id")), [float(v) for v in bbox]))
+    boxes.sort(key=lambda item: item[1][0])
+    warnings = []
+    for i, (a_id, (ax, ay, aw, ah)) in enumerate(boxes):
+        for b_id, (bx, by, bw, bh) in boxes[i + 1 :]:
+            gap = bx - (ax + aw)
+            if gap > 0.4 * min(ah, bh):
+                continue
+            if gap < -0.5 * min(aw, bw):
+                continue  # stacked/overlapping boxes, not a left-to-right phrase
+            overlap = min(ay + ah, by + bh) - max(ay, by)
+            if overlap >= 0.5 * min(ah, bh):
+                warnings.append(
+                    f"{ppath}: text objects '{a_id}' and '{b_id}' sit on one line; if they are one phrase "
+                    "(number + unit, label + count, brand + title) merge them into one text object with runs"
+                )
+    return warnings
+
+
+def validate_page_ir(payload: Any, base_dir: Path) -> list[str]:
+    return validate_page_ir_detailed(payload, base_dir)[0]
 
 
 def main() -> int:
@@ -143,16 +346,19 @@ def main() -> int:
     args = parser.parse_args()
     path = Path(args.page_ir)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    errors = validate_page_ir(payload, path.resolve().parent)
-    result = {"valid": not errors, "errors": errors}
+    errors, warnings = validate_page_ir_detailed(payload, path.resolve().parent)
+    result = {"valid": not errors, "errors": errors, "warnings": warnings}
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    elif errors:
-        print("PageIR validation failed:")
-        for item in errors:
-            print(f"- {item}")
     else:
-        print("PageIR validation passed")
+        if errors:
+            print("PageIR validation failed:")
+            for item in errors:
+                print(f"- {item}")
+        else:
+            print("PageIR validation passed")
+        for item in warnings:
+            print(f"WARNING: {item}")
     return 0 if not errors else 2
 
 

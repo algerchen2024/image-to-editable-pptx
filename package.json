@@ -1,8 +1,8 @@
 {
   "name": "image-to-editable-pptx",
-  "version": "0.1.0",
+  "version": "5.3.0",
   "private": true,
-  "description": "Portable PageIR compiler used by the Image to Editable PPTX ChatGPT skill",
+  "description": "Portable PageIR compiler used by the Image to Editable PPTX skill",
   "license": "MIT",
   "engines": {
     "node": ">=20"

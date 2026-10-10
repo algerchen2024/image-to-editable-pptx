@@ -118,7 +118,7 @@ python3 -m pip install -r requirements.txt
 Install the Node dependency:
 
 ```bash
-npm install
+npm ci
 ```
 
 Check the runtime:
@@ -134,6 +134,26 @@ python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
 node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
 ```
 
+Helpers that speed up authoring PageIR from a source image:
+
+```bash
+python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target mac --out page_ir.json   # draft text objects
+python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # measured colors
+python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
+python3 scripts/install_fonts.py fonts/                                                          # optional: render with the exact delivery font
+python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # measured panels, borders, rules
+python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # compile, compare, auto-correct
+python3 scripts/delivery_gate.py quality                                                         # HIGH / CLOSE / FAIL per slide
+python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out deck.pptx          # join finished slides
+```
+
+Several images are converted one slide at a time with the full workflow each. `delivery_gate.py` refuses slides that skipped the fidelity loop, and flags slides where source content is missing from the reconstruction.
+
+`fidelity_loop.py` compiles the PageIR, renders it, measures every object against the source (edges for shapes, line by line for text), and corrects position, size, font size, wrapping, line spacing and letter spacing until objects match within 2 px. Image tools need only numpy and Pillow; OpenCV is not required.
+
+Fonts are chosen for the machine that opens the PPTX (`--target mac` gives PingFang SC / Helvetica Neue; `windows` gives Microsoft YaHei / Arial). The validator rejects render-sandbox fonts such as Noto Sans CJK unless the user has installed them too.
+
 ## PageIR
 
 The compiler consumes a compact JSON representation in source-pixel coordinates. Text, shapes, lines, and image assets are declared explicitly; the compiler only translates those decisions into PowerPoint objects. See [references/pageir-schema.md](references/pageir-schema.md).
@@ -142,7 +162,7 @@ The compiler consumes a compact JSON representation in source-pixel coordinates.
 
 The project favors editability and object fidelity over pixel tricks. A high-fidelity result should have exact visible wording, correct slide ratio, aligned major anchors, native simple geometry, and no hidden full-slide screenshot used to fake accuracy.
 
-The render-comparison tool produces `rendered.png`, `diff.png`, and `metrics.json`. Pixel metrics are review signals rather than universal pass/fail thresholds because fonts and presentation renderers vary by platform.
+The render-comparison tool produces `rendered.png`, `overlay.png`, `heatmap.png`, `diff.png`, and `metrics.json`; with `--page-ir` it lists the difference hotspots together with the PageIR objects that own them. Pixel metrics are review signals rather than universal pass/fail thresholds because fonts and presentation renderers vary by platform.
 
 ## Development
 

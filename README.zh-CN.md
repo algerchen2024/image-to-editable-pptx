@@ -123,7 +123,7 @@ python3 -m pip install -r requirements.txt
 安装 Node 依赖：
 
 ```bash
-npm install
+npm ci
 ```
 
 运行环境检查：
@@ -139,6 +139,26 @@ python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
 node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
 ```
 
+辅助编写 PageIR 的工具：
+
+```bash
+python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target mac --out page_ir.json   # 生成文本对象草稿
+python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # 实测颜色
+python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
+python3 scripts/install_fonts.py fonts/                                                          # 可选：用与交付一致的字体渲染
+python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # 实测面板、边框、分隔线
+python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # 编译、比对、自动校正
+python3 scripts/delivery_gate.py quality                                                         # 每页评级：HIGH / CLOSE / FAIL
+python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out deck.pptx          # 把完成的各页合成一份
+```
+
+多张图片会逐页处理，每页都走完整流程。`delivery_gate.py` 会拒绝没跑校正循环的页面，并标出原图里有、重建版里漏掉的内容。
+
+`fidelity_loop.py` 会编译 PageIR、渲染、把每个对象与原图逐一测量比对（形状按四条边，文字逐行），并自动校正位置、尺寸、字号、换行、行距和字间距，直到对象误差在 2 像素以内。图像工具只依赖 numpy 和 Pillow，不需要 OpenCV。
+
+字体按打开 PPTX 的电脑来选：`--target mac` 默认用苹方（PingFang SC）和 Helvetica Neue，`windows` 默认用微软雅黑和 Arial。渲染环境专用的字体（如 Noto Sans CJK）会被校验拦截，除非用户的电脑上也装了。
+
 ## PageIR
 
 编译器读取一种紧凑的、以源像素为坐标系的 JSON 表示。文本、形状、连线与图片资产都需要显式声明；编译器只负责把这些决策转成 PowerPoint 对象。详见 [references/pageir-schema.md](references/pageir-schema.md)。
@@ -147,7 +167,7 @@ node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
 
 本项目优先保证**可编辑性**与**对象级忠实度**，而不是用像素技巧“伪装”高相似度。高质量结果应具备：可见文字正确、页面比例正确、主要结构锚点对齐、简单几何为原生对象，并且不能靠隐藏整页截图来冒充精确还原。
 
-渲染对比工具会生成 `rendered.png`、`diff.png` 与 `metrics.json`。由于不同平台的字体与渲染器可能不同，像素指标更适合作为复核信号，而不是绝对的跨平台硬阈值。
+渲染对比工具会生成 `rendered.png`、`overlay.png`、`heatmap.png`、`diff.png` 与 `metrics.json`；传入 `--page-ir` 时，还会列出差异热点区域及其对应的 PageIR 对象。由于不同平台的字体与渲染器可能不同，像素指标更适合作为复核信号，而不是绝对的跨平台硬阈值。
 
 ## 开发与检查
 

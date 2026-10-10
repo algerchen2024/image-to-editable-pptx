@@ -37,9 +37,16 @@ def join_tokens(tokens: list[str]) -> str:
     return result
 
 
-def extract(image_path: Path, lang: str, min_conf: float) -> dict:
+def extract(image_path: Path, lang: str, min_conf: float, psm: int = 11, scale: float = 2.0) -> dict:
     image = Image.open(image_path).convert("RGB")
-    data = pytesseract.image_to_data(image, lang=lang, output_type=Output.DICT, config="--psm 6")
+    # Upscaling helps Tesseract with small slide captions; boxes are mapped back
+    # to source pixels below.
+    ocr_image = image
+    if scale != 1.0:
+        ocr_image = image.resize((round(image.width * scale), round(image.height * scale)), Image.Resampling.LANCZOS)
+    data = pytesseract.image_to_data(ocr_image, lang=lang, output_type=Output.DICT, config=f"--psm {psm}")
+    for key in ("left", "top", "width", "height"):
+        data[key] = [int(round(int(v) / scale)) for v in data[key]]
     groups: dict[tuple[int, int, int, int], list[int]] = defaultdict(list)
     count = len(data["text"])
     for i in range(count):
@@ -75,17 +82,34 @@ def extract(image_path: Path, lang: str, min_conf: float) -> dict:
                 "tokens": tokens,
             }
         )
-    return {"image": str(image_path), "width_px": image.width, "height_px": image.height, "lang": lang, "lines": lines}
+    return {
+        "image": str(image_path),
+        "width_px": image.width,
+        "height_px": image.height,
+        "lang": lang,
+        "psm": psm,
+        "scale": scale,
+        "lines": lines,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("image")
     parser.add_argument("--lang", default="eng")
-    parser.add_argument("--min-conf", type=float, default=55.0)
+    parser.add_argument("--min-conf", type=float, default=40.0, help="drop words below this Tesseract confidence")
+    parser.add_argument(
+        "--psm",
+        type=int,
+        default=11,
+        help="Tesseract page segmentation mode; 11 (sparse text) suits multi-column slides, 6 suits one text block",
+    )
+    parser.add_argument("--scale", type=float, default=2.0, help="upscale factor applied before OCR")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    payload = extract(Path(args.image), args.lang, args.min_conf)
+    if args.scale <= 0:
+        parser.error("--scale must be positive")
+    payload = extract(Path(args.image), args.lang, args.min_conf, args.psm, args.scale)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
