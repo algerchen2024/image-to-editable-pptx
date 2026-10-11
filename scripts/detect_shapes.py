@@ -26,16 +26,16 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from image_ops import border_color, label_components  # noqa: E402
+from image_ops import border_color, dilate, label_components  # noqa: E402
 from pageir_common import pt_per_px, rgb_to_hex  # noqa: E402
 
 
 COLOR_TOLERANCE = 14  # flat fills render uniformly
 STROKE_TOLERANCE = 44  # thin strokes are anti-aliased across several shades
-STROKE_MIN_CONTRAST = 60  # pale tints are fills, not strokes
+STROKE_MIN_CONTRAST = 24  # light-gray card borders are only ~30 levels darker than white
 MIN_COLOR_SHARE = 0.0008
 MIN_STROKE_SHARE = 0.0001  # a 1 px rule is only a few hundred pixels
-MAX_COLORS = 16
+MAX_COLORS = 24
 MIN_PANEL = 20
 
 
@@ -45,9 +45,16 @@ def candidate_colors(
     tolerance: int = COLOR_TOLERANCE,
     min_contrast: int = COLOR_TOLERANCE,
     min_share: float = MIN_COLOR_SHARE,
+    keep: np.ndarray | None = None,
 ) -> list[np.ndarray]:
-    """Frequent colors that differ from the page background, deduplicated within `tolerance`."""
+    """Frequent colors that differ from the page background, deduplicated within `tolerance`.
+
+    `keep` limits the count to pixels outside text boxes and image assets, so
+    anti-aliased glyph shades do not use up the color slots.
+    """
     pixels = image.reshape(-1, 3).astype(np.int32)
+    if keep is not None:
+        pixels = pixels[keep.reshape(-1)]
     keys = (pixels // 8) @ np.array([1024, 32, 1])
     values, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
     order = np.argsort(-counts)
@@ -59,7 +66,8 @@ def candidate_colors(
         color = pixels[inverse.reshape(-1) == idx].mean(axis=0)
         if np.abs(color - background).max() <= min_contrast:
             continue
-        if any(np.abs(color - c).max() <= tolerance for c in colors):
+        # Deduplicate relative to contrast: an axis gray (#AAA) is not the bar gray (#CCC).
+        if any(np.abs(color - c).max() <= min(tolerance, max(6, 0.5 * np.abs(c - background).max())) for c in colors):
             continue
         colors.append(color)
     return colors
@@ -193,7 +201,9 @@ def clean_rules(
 
     merged = []
     for group in groups:
-        best = max(group, key=contrast)
+        # Shape-measured hairlines carry their true color; otherwise take the most contrasting shade.
+        measured = [r for r in group if r.get("measured")]
+        best = max(measured or group, key=lambda r: (r["thickness"], contrast(r)) if measured else contrast(r))
         if len(group) > 1:
             axis = _rule_axis(best)[0]
             lows = [_rule_axis(r)[1] - r["thickness"] / 2 for r in group]
@@ -209,6 +219,195 @@ def clean_rules(
     return merged
 
 
+def color_tolerance(color: np.ndarray, background: np.ndarray, limit: int) -> int:
+    """Match tolerance for a color: at most half its contrast, so a light-gray border never matches the page."""
+    contrast = float(np.abs(color - background).max())
+    return int(max(6, min(limit, 0.5 * contrast)))
+
+
+def is_halo(rule: dict, img: np.ndarray, strong: list[np.ndarray], background: np.ndarray) -> bool:
+    """A thin rule that is a blend toward a stronger color running right beside it is anti-aliasing."""
+    blends = [c for c in strong if is_blend(rule["color"], background, c) and rgb_to_hex(c) != rule["color"]]
+    if not blends:
+        return False
+    axis, pos, start, end = _rule_axis(rule)
+    h, w = img.shape[:2]
+    samples = np.linspace(start, end, num=max(8, int((end - start) // 6)))
+    hits = 0
+    for s in samples:
+        if axis == "h":
+            ys, xs = slice(max(0, int(pos) - 3), min(h, int(pos) + 4)), slice(int(s), int(s) + 1)
+        else:
+            ys, xs = slice(int(s), int(s) + 1), slice(max(0, int(pos) - 3), min(w, int(pos) + 4))
+        patch = img[ys, xs].reshape(-1, 3)
+        for c in blends:
+            # The line's own pixels must not count as the stronger color.
+            tol = min(24.0, 0.5 * float(np.abs(_hex_rgb(rule["color"]) - c).max()))
+            if (np.abs(patch - c).max(axis=1) <= tol).any():
+                hits += 1
+                break
+    return hits >= 0.5 * len(samples)
+
+
+THIN_CONTRAST = 10
+THIN_GAP = 3
+
+
+def _runs(row: np.ndarray, min_len: int, max_gap: int = 2) -> list[tuple[int, int]]:
+    """[start, end) runs of True in a 1-D mask, bridging gaps of up to max_gap."""
+    idx = np.flatnonzero(row)
+    if idx.size == 0:
+        return []
+    runs = []
+    start = prev = int(idx[0])
+    for i in idx[1:]:
+        i = int(i)
+        if i - prev > max_gap + 1:
+            if prev + 1 - start >= min_len:
+                runs.append((start, prev + 1))
+            start = i
+        prev = i
+    if prev + 1 - start >= min_len:
+        runs.append((start, prev + 1))
+    return runs
+
+
+def thin_lines(img: np.ndarray, background: np.ndarray, keep: np.ndarray, min_len: int) -> list[dict]:
+    """Hairlines (1-4 px) found by shape, not color: ink with background 3 px to both sides.
+
+    Anti-aliasing spreads a thin border over several shades, so exact color
+    matching breaks it apart; this does not. The color is the mean of the
+    darkest pixel across the line at each position.
+    """
+    diff = np.abs(img - background).max(axis=2)
+    ink = (diff > THIN_CONTRAST) & keep
+    quiet = diff <= THIN_CONTRAST
+    found = []
+    for axis in ("h", "v"):
+        d = diff if axis == "h" else diff.T
+        m = ink if axis == "h" else ink.T
+        q = quiet if axis == "h" else quiet.T
+        image = img if axis == "h" else img.transpose(1, 0, 2)
+        thin = m.copy()
+        thin[THIN_GAP:-THIN_GAP] &= q[: -2 * THIN_GAP] | q[2 * THIN_GAP :]
+        # Background must show on *both* sides somewhere within 3 px.
+        above = np.zeros_like(m)
+        below = np.zeros_like(m)
+        for k in range(1, THIN_GAP + 2):
+            above[k:] |= q[:-k]
+            below[:-k] |= q[k:]
+        thin = m & above & below
+        segments = []
+        for y in range(thin.shape[0]):
+            for x0, x1 in _runs(thin[y], min_len):
+                segments.append([y, x0, x1])
+        # Merge adjacent rows of the same line into one rule with a thickness.
+        segments.sort()
+        merged: list[list[int]] = []
+        for y, x0, x1 in segments:
+            for line in merged:
+                if y - line[1] <= 1 and min(x1, line[3]) - max(x0, line[2]) >= 0.5 * min(x1 - x0, line[3] - line[2]):
+                    line[1] = y
+                    line[2], line[3] = min(line[2], x0), max(line[3], x1)
+                    break
+            else:
+                merged.append([y, y, x0, x1])
+        for y0, y1, x0, x1 in merged:
+            if y1 - y0 + 1 > 4:
+                continue
+            band = d[y0 : y1 + 1, x0:x1]
+            rows = np.argmax(band, axis=0) + y0
+            colors = image[rows, np.arange(x0, x1)]
+            color = rgb_to_hex(colors.mean(axis=0))
+            centre = (y0 + y1 + 1) / 2
+            points = [x0, centre, x1, centre] if axis == "h" else [centre, x0, centre, x1]
+            found.append(
+                {"points": [float(v) for v in points], "color": color, "thickness": float(y1 - y0 + 1), "measured": True}
+            )
+    return found
+
+
+def join_collinear(rules: list[dict], panels: list[dict], slack: float = 3.0) -> list[dict]:
+    """Join collinear rule segments whose gap is covered by a panel resting on the line (bars on an axis)."""
+    out = sorted(rules, key=lambda r: (_rule_axis(r)[0], round(_rule_axis(r)[1]), _rule_axis(r)[2]))
+    joined: list[dict] = []
+    for rule in out:
+        axis, pos, start, end = _rule_axis(rule)
+        if joined:
+            p_axis, p_pos, p_start, p_end = _rule_axis(joined[-1])
+            if p_axis == axis and abs(p_pos - pos) <= slack and start > p_end:
+                gap = (p_end, start)
+                covered = False
+                for panel in panels:
+                    x, y, w, h = panel["bbox"]
+                    edge_near = (abs(y + h - pos) <= slack or abs(y - pos) <= slack) if axis == "h" else (abs(x - pos) <= slack or abs(x + w - pos) <= slack)
+                    span = (x, x + w) if axis == "h" else (y, y + h)
+                    if edge_near and span[0] <= gap[0] + slack and span[1] >= gap[1] - slack:
+                        covered = True
+                        break
+                if covered:
+                    prev = joined[-1]
+                    x1, y1, x2, y2 = prev["points"]
+                    joined[-1] = {**prev, "points": [x1, y1, rule["points"][2], y2] if axis == "h" else [x1, y1, x2, rule["points"][3]]}
+                    continue
+        joined.append(rule)
+    return joined
+
+
+def rules_to_outlines(rules: list[dict], ink: np.ndarray, slack: float = 6.0) -> tuple[list[dict], list[dict]]:
+    """Reassemble four rules that form a box into one outline.
+
+    A 1 px light border breaks apart at its anti-aliased corners and is found as
+    separate top/bottom/left/right rules. Each top/bottom pair takes the nearest
+    vertical rules at its own ends; the corner radius is measured on the ink.
+    """
+    horizontals = [r for r in rules if _rule_axis(r)[0] == "h"]
+    verticals = [r for r in rules if _rule_axis(r)[0] == "v"]
+    used: set[int] = set()
+    outlines = []
+    for top in sorted(horizontals, key=lambda r: _rule_axis(r)[1]):
+        if id(top) in used:
+            continue
+        _, ty, tx0, tx1 = _rule_axis(top)
+        for bottom in sorted(horizontals, key=lambda r: _rule_axis(r)[1]):
+            _, by, bx0, bx1 = _rule_axis(bottom)
+            if id(bottom) in used or by <= ty + 20 or abs(bx0 - tx0) > slack or abs(bx1 - tx1) > slack:
+                continue
+            reach = 0.3 * min(tx1 - tx0, by - ty) + slack  # a rounded corner shortens the edges
+
+            def side(target: float, outward: int):
+                best = None
+                for v in verticals:
+                    if id(v) in used:
+                        continue
+                    _, vx, vy0, vy1 = _rule_axis(v)
+                    offset = (target - vx) * outward * -1  # how far outside the horizontal's end
+                    if -slack <= offset <= reach and vy0 >= ty - slack and vy1 <= by + slack and vy1 - vy0 >= 0.5 * (by - ty):
+                        if best is None or abs(offset) < abs(best[0]):
+                            best = (offset, v)
+                return best[1] if best else None
+
+            left = side(tx0, -1)
+            right = side(tx1, 1)
+            if left is None or right is None:
+                continue
+            lx, rx = _rule_axis(left)[1], _rule_axis(right)[1]
+            stroke = max(1.0, (top["thickness"] + bottom["thickness"] + left["thickness"] + right["thickness"]) / 4)
+            x0, y0 = int(round(lx - stroke / 2)), int(round(ty - stroke / 2))
+            x1, y1 = int(round(rx + stroke / 2)), int(round(by + stroke / 2))
+            crop = ink[max(0, y0) : y1 + 1, max(0, x0) : x1 + 1]
+            # Thicken by a pixel: the diagonal probe must not slip through a stair-stepped 1 px curve.
+            radius = corner_radius(dilate(crop, 1)) if y1 > y0 and x1 > x0 else 0.0
+            radius = min(radius, 0.5 * min(x1 - x0, y1 - y0))
+            darkest = min((top, bottom, left, right), key=lambda r: sum(int(r["color"][i : i + 2], 16) for i in (1, 3, 5)))
+            outlines.append(
+                {"bbox": [x0, y0, x1 - x0 + 1, y1 - y0 + 1], "line": darkest["color"], "stroke": stroke, "fill": None, "radius": radius}
+            )
+            used.update(id(r) for r in (top, bottom, left, right))
+            break
+    return outlines, [r for r in rules if id(r) not in used]
+
+
 def detect(image: np.ndarray, exclude: list[list[float]] | None = None) -> list[dict]:
     page_h, page_w = image.shape[:2]
     ppx = pt_per_px(page_w, page_h)
@@ -220,10 +419,13 @@ def detect(image: np.ndarray, exclude: list[list[float]] | None = None) -> list[
     outlines: list[dict] = []
     rules: list[dict] = []
     img = image.astype(np.int32)
+    keep = np.ones((page_h, page_w), dtype=bool)
+    for bx, by, bw, bh in exclude:
+        keep[max(0, int(by)) : max(0, int(by + bh)), max(0, int(bx)) : max(0, int(bx + bw))] = False
 
     # Pass 1: flat fills (panels, bars, circles) with a tight color tolerance.
-    for color in candidate_colors(image, background):
-        mask = np.abs(img - color).max(axis=2) <= COLOR_TOLERANCE
+    for color in candidate_colors(image, background, keep=keep):
+        mask = np.abs(img - color).max(axis=2) <= color_tolerance(color, background, COLOR_TOLERANCE)
         hex_color = rgb_to_hex(color)
         for comp in label_components(mask):
             x, y, w, h = comp["bbox"]
@@ -241,8 +443,9 @@ def detect(image: np.ndarray, exclude: list[list[float]] | None = None) -> list[
 
     # Pass 2: strokes (rules, box outlines) among contrasting colors, with a
     # wide tolerance so anti-aliased edges stay connected.
-    for color in candidate_colors(image, background, STROKE_TOLERANCE, STROKE_MIN_CONTRAST, MIN_STROKE_SHARE):
-        mask = np.abs(img - color).max(axis=2) <= STROKE_TOLERANCE
+    stroke_colors = candidate_colors(image, background, STROKE_TOLERANCE, STROKE_MIN_CONTRAST, MIN_STROKE_SHARE, keep)
+    for color in stroke_colors:
+        mask = np.abs(img - color).max(axis=2) <= color_tolerance(color, background, STROKE_TOLERANCE)
         hex_color = rgb_to_hex(color)
         for comp in label_components(mask):
             x, y, w, h = comp["bbox"]
@@ -289,18 +492,26 @@ def detect(image: np.ndarray, exclude: list[list[float]] | None = None) -> list[
                 outline["fill"] = panel["fill"]
                 panels.remove(panel)
 
+    rules += thin_lines(img, background, keep, min_rule)
     rules = clean_rules(
         rules,
         [(p["bbox"], [p["fill"]]) for p in panels] + [(o["bbox"], [o["line"], o["fill"]]) for o in outlines],
         background,
     )
+    rules = [r for r in rules if not is_halo(r, img, stroke_colors, background)]
+    ink = np.abs(img - background).max(axis=2) > 1.6 * THIN_CONTRAST
+    boxes_from_rules, rules = rules_to_outlines(rules, ink)
+    outlines += boxes_from_rules
+    rules = join_collinear(rules, panels)
 
     objects: list[dict] = []
     shapes = [("panel", p) for p in panels] + [("outline", o) for o in outlines]
     shapes.sort(key=lambda item: -item[1]["bbox"][2] * item[1]["bbox"][3])  # big first = further back
     for index, (kind, s) in enumerate(shapes, start=1):
         radius = s.get("radius", 0.0)
-        obj_type = "ellipse" if s.get("ellipse") else ("round_rect" if radius >= 3 else "rect")
+        # Anti-aliasing rounds every corner by 1-3 px; a measured radius above that is real rounding.
+        rounded = radius >= 4.5
+        obj_type = "ellipse" if s.get("ellipse") else ("round_rect" if rounded else "rect")
         style: dict = {}
         if kind == "panel":
             style.update({"fill": s["fill"], "line": None})
@@ -356,7 +567,12 @@ def main() -> int:
         page = pages[args.page - 1]
         if (int(page["width_px"]), int(page["height_px"])) != (image.shape[1], image.shape[0]):
             parser.error("image size does not match the PageIR page size")
-        exclude = [o["bbox"] for o in page.get("objects", []) if o.get("type") == "text" and isinstance(o.get("bbox"), list)]
+        # Text boxes and image assets (icons) are already owned by other objects.
+        exclude = [
+            o["bbox"]
+            for o in page.get("objects", [])
+            if o.get("type") in ("text", "image") and isinstance(o.get("bbox"), list)
+        ]
 
     objects = detect(image, exclude)
     if payload is not None:

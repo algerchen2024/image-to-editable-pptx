@@ -18,12 +18,10 @@ SCRIPTS = ROOT / "scripts"
 
 
 def tools_ready() -> bool:
-    if not all(shutil.which(t) for t in ("node", "pdftoppm")) or not (shutil.which("soffice") or shutil.which("libreoffice")):
-        return False
-    return subprocess.run(["node", "-e", "require('pptxgenjs')"], cwd=ROOT, capture_output=True).returncode == 0
+    return bool(shutil.which("pdftoppm")) and bool(shutil.which("soffice") or shutil.which("libreoffice"))
 
 
-@unittest.skipUnless(tools_ready(), "needs node+pptxgenjs, LibreOffice and pdftoppm")
+@unittest.skipUnless(tools_ready(), "needs LibreOffice and pdftoppm")
 class FidelityLoopTests(unittest.TestCase):
     def test_perturbed_fixture_converges(self):
         sys.path.insert(0, str(SCRIPTS))
@@ -33,7 +31,7 @@ class FidelityLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "truth.json").write_text(json.dumps(truth), encoding="utf-8")
-            subprocess.run(["node", str(SCRIPTS / "compile_page_ir.js"), str(tmp / "truth.json"), str(tmp / "truth.pptx")], check=True, capture_output=True)
+            subprocess.run([sys.executable, str(SCRIPTS / "compile_page_ir.py"), str(tmp / "truth.json"), str(tmp / "truth.pptx")], check=True, capture_output=True)
             rendered = render_slides(tmp / "truth.pptx", tmp, 120)[0]
             Image.open(rendered).convert("RGB").resize((1600, 900), Image.Resampling.LANCZOS).save(tmp / "source.png")
 
@@ -91,7 +89,7 @@ class FidelityLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "truth.json").write_text(json.dumps(truth, ensure_ascii=False), encoding="utf-8")
-            subprocess.run(["node", str(SCRIPTS / "compile_page_ir.js"), str(tmp / "truth.json"), str(tmp / "truth.pptx")], check=True, capture_output=True)
+            subprocess.run([sys.executable, str(SCRIPTS / "compile_page_ir.py"), str(tmp / "truth.json"), str(tmp / "truth.pptx")], check=True, capture_output=True)
             rendered = render_slides(tmp / "truth.pptx", tmp, 130)[0]
             Image.open(rendered).convert("RGB").resize((1672, 941), Image.Resampling.LANCZOS).save(tmp / "source.png")
 

@@ -8,6 +8,23 @@ The skill appears in ChatGPT as "GPT Image to Editable PPTX V<major>". Versions 
 
 The PageIR `schema_version` (currently 1.1) is the version of the internal JSON format and is numbered independently.
 
+## [5.4.0] - 2026-10-11 (V5.4)
+
+From a ChatGPT run where the skill's scripts never ran: the model hand-wrote python-pptx code, put the source image under a text layer, replaced icons with "◯", and reported a gate result it had not computed. The likely root cause was the Node compiler: PptxGenJS is not in the skill package and cannot be installed without internet. Shape detection was also noisy on AI-generated slides.
+
+### Added
+
+- `compile_page_ir.py`: pure-Python compiler (python-pptx), render-identical to the Node compiler; it is now the default for `fidelity_loop.py` and `assemble_deck.py`. Node.js is optional and the core runtime needs only numpy, Pillow, python-pptx and lxml.
+- `extract_assets.py`: crops icons and other complex graphics whole, with transparent background, from ink no object covers. Solid bars and hairlines are left for native shapes; overlapping parts merge; card borders and axes are masked so they never bridge clusters.
+- Shape-based hairline detector in `detect_shapes.py`: 1-4 px lines found by form, not color, with their true color. It catches light-gray card borders and chart axes on anti-aliased images. Four border lines reassemble into one rounded outline with a measured radius, and axis segments interrupted by bars are joined.
+- SKILL.md "Running this skill": how to locate the scripts; never improvise (no hand-written python-pptx, no screenshot layer, no glyph icons); stop and report when a step fails; gate results only quoted from `delivery_gate.py`. Text comes first, then icons, then shapes.
+
+### Fixed
+
+- Detection: candidate colors counted outside text and asset regions; contrast-relative color tolerances and deduplication; anti-aliasing halos dropped only when a stronger color runs beside them; anti-aliased corners no longer become rounded rectangles.
+- Fit: shapes are measured by their own color (largest component), so overlapping or overflowing text no longer moves cards. Text in fonts the render environment substitutes is marked `width_unverified` instead of failing line-width checks; the gate reports how many.
+- Python compiler drops the theme style that added drop shadows to shapes.
+
 ## [5.3.0] - 2026-10-10 (V5.3)
 
 Font profiles and batch quality. Users with their own fonts get exact renders without anything user-specific in the skill. Several images no longer lead to fast, low-fidelity conversions.

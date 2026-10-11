@@ -358,3 +358,47 @@ class BatchToolTests(unittest.TestCase):
             c = write(tmp / "s3", 900, 1600)
             with self.assertRaises(ValueError):
                 assemble_deck.assemble([a, c])
+
+
+class InfographicSegmentationTests(unittest.TestCase):
+    """Cards with 1 px light borders and line icons, a bar chart on axes (an AI-generated promo slide)."""
+
+    def build(self):
+        image, d = canvas(1672, 941)
+        for x in (60, 457, 852, 1249):
+            d.rounded_rectangle([x, 233, x + 364, 527], radius=12, outline=(222, 222, 222), width=1, fill=(255, 255, 255))
+            # A line icon: frame, inner glyph-like bars, and a stand.
+            d.rounded_rectangle([x + 120, 265, x + 240, 345], radius=6, outline=(240, 90, 40), width=5)
+            d.rectangle([x + 150, 290, x + 210, 300], fill=(240, 90, 40))
+            d.rectangle([x + 150, 312, x + 190, 322], fill=(240, 90, 40))
+            d.rectangle([x + 170, 355, x + 190, 372], fill=(240, 90, 40))
+        d.line([117, 622, 117, 809], fill=(170, 170, 170), width=2)
+        d.line([117, 809, 906, 809], fill=(170, 170, 170), width=2)
+        d.rectangle([178, 747, 304, 808], fill=(204, 204, 206))
+        d.rectangle([706, 640, 837, 808], fill=(240, 90, 40))
+        return image
+
+    def test_icons_become_assets_and_structure_becomes_shapes(self):
+        import extract_assets
+
+        image = np.array(self.build())
+        page = {"width_px": 1672, "height_px": 941, "objects": []}
+        assets = extract_assets.find_assets(image, page)
+        self.assertEqual(len(assets), 4)
+        for (x, y, w, h), card_x in zip(sorted(assets), (60, 457, 852, 1249)):
+            self.assertAlmostEqual(x, card_x + 118, delta=4)  # the whole icon, frame included
+            self.assertGreater(h, 100)  # frame + stand in one asset
+        page["objects"] = [{"id": f"a{i}", "type": "image", "bbox": b} for i, b in enumerate(assets)]
+        shapes = detect_shapes.detect(image, [o["bbox"] for o in page["objects"]])
+        cards = [o for o in shapes if o["type"] == "round_rect"]
+        self.assertEqual(len(cards), 4)
+        for card in cards:
+            self.assertAlmostEqual(card["bbox"][2], 365, delta=4)
+            self.assertEqual(card["style"]["line"][:3], "#DE")
+        bars = sorted((o for o in shapes if o["type"] == "rect"), key=lambda o: o["bbox"][0])
+        self.assertEqual([round(b["bbox"][0]) for b in bars], [178, 706])
+        lines = [o for o in shapes if o["type"] == "line"]
+        self.assertEqual(len(lines), 2)  # y axis, and the x axis joined across the bars
+        x_axis = max(lines, key=lambda o: abs(o["points"][2] - o["points"][0]))
+        self.assertLess(x_axis["points"][0], 125)
+        self.assertGreater(x_axis["points"][2], 895)

@@ -105,12 +105,62 @@ def _touches(box, region, page_w: float, page_h: float) -> bool:
     )
 
 
+def _own_color(obj: dict) -> np.ndarray | None:
+    """The color that identifies a shape's own pixels: its outline, else its fill."""
+    style = obj.get("style") or {}
+    value = None
+    if obj.get("type") == "line":
+        value = style.get("color", "#111111")
+    elif obj.get("type") in ("rect", "round_rect", "ellipse", "triangle", "chevron"):
+        value = style.get("line") if style.get("line") else style.get("fill")
+    if not isinstance(value, str):
+        return None
+    from pageir_common import normalize_hex
+
+    digits = normalize_hex(value)[1:]
+    return np.array([int(digits[i : i + 2], 16) for i in (0, 2, 4)], dtype=np.int32)
+
+
+def color_box(image: np.ndarray, region, color: np.ndarray):
+    """Bounding box of pixels close to `color` in a region (text or icons on a card are ignored)."""
+    h, w = image.shape[:2]
+    x0, y0, x1, y1 = (int(round(v)) for v in region)
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return None
+    crop = image[y0:y1, x0:x1, :3].astype(np.int32)
+    bg = dominant_color(crop)
+    contrast = float(np.abs(color - bg).max())
+    tol = max(8.0, min(48.0, 0.5 * contrast))
+    mask = np.abs(crop - color).max(axis=2) <= tol
+    if mask.sum() < 4 or contrast < 10:
+        return None
+    # The shape is the largest same-colored component; anti-aliased specks of
+    # overlapping text that happen to share the color are not.
+    from image_ops import label_components
+
+    comps = label_components(mask)
+    biggest = max(c["area"] for c in comps)
+    keep = [c["bbox"] for c in comps if c["area"] >= 0.2 * biggest]
+    bx0 = min(b[0] for b in keep)
+    by0 = min(b[1] for b in keep)
+    bx1 = max(b[0] + b[2] for b in keep)
+    by1 = max(b[1] + b[3] for b in keep)
+    return [x0 + bx0, y0 + by0, x0 + bx1, y0 + by1]
+
+
 def _measure_box(obj, source, rendered, page_w, page_h):
     src = ren = None
+    color = _own_color(obj)
     for grow in GROW_STEPS:
         region = object_region(obj, page_w, page_h, grow)
-        src = ink_box(source, region)
-        ren = ink_box(rendered, region)
+        if color is not None:
+            # Shapes are located by their own color: overlapping text and icons do not move them.
+            src = color_box(source, region, color)
+            ren = color_box(rendered, region, color)
+        if color is None or src is None or ren is None:
+            src = ink_box(source, region)
+            ren = ink_box(rendered, region)
         if src is not None and ren is not None and not (
             _touches(src, region, page_w, page_h) or _touches(ren, region, page_w, page_h)
         ):
@@ -191,7 +241,9 @@ def _union(lines):
     return [min(b[0] for b in lines), min(b[1] for b in lines), max(b[2] for b in lines), max(b[3] for b in lines)]
 
 
-def measure_text(obj: dict, source, rendered, page_w: float, page_h: float, result: dict) -> dict:
+def measure_text(
+    obj: dict, source, rendered, page_w: float, page_h: float, result: dict, check_width: bool = True
+) -> dict:
     src_lines, ren_lines = _measure_lines(obj, source, rendered, page_w, page_h)
     if not src_lines and not ren_lines:
         result["status"] = "no_ink"
@@ -268,20 +320,32 @@ def measure_text(obj: dict, source, rendered, page_w: float, page_h: float, resu
         and abs(anchor_dx) <= tol
         and abs(anchor_dy) <= tol
         and abs(scale_h - 1) <= SIZE_TOLERANCE
-        and (not width_comparable or abs(src_w - ren_w) <= max(2 * tol, WIDTH_TOLERANCE * src_w))
+        and (not width_comparable or not check_width or abs(src_w - ren_w) <= max(2 * tol, WIDTH_TOLERANCE * src_w))
         and (pitch_ratio is None or abs(pitch_ratio - 1) <= PITCH_TOLERANCE)
     )
+    if not check_width:
+        # Rendered with a substitute font: line length says nothing about the user's font.
+        result["width_unverified"] = True
     result["status"] = "ok" if ok else "off"
     return result
 
 
-def measure_object(obj: dict, source: np.ndarray, rendered: np.ndarray, page_w: float, page_h: float) -> dict:
+def measure_object(
+    obj: dict,
+    source: np.ndarray,
+    rendered: np.ndarray,
+    page_w: float,
+    page_h: float,
+    substituted: set[str] | None = None,
+    default_font: str = "Arial",
+) -> dict:
     result: dict = {"id": obj.get("id"), "type": obj.get("type")}
     if object_region(obj, page_w, page_h) is None:
         result["status"] = "not_measured"
         return result
     if obj.get("type") == "text":
-        return measure_text(obj, source, rendered, page_w, page_h, result)
+        check_width = not uses_font(obj, substituted or set(), default_font)
+        return measure_text(obj, source, rendered, page_w, page_h, result, check_width)
 
     src, ren = _measure_box(obj, source, rendered, page_w, page_h)
     if src is None and ren is None:
@@ -310,9 +374,17 @@ def object_error(f: dict) -> float:
     return err
 
 
-def measure_page(objects: list[dict], source: np.ndarray, rendered: np.ndarray) -> dict:
+def measure_page(
+    objects: list[dict],
+    source: np.ndarray,
+    rendered: np.ndarray,
+    substituted: set[str] | None = None,
+    default_font: str = "Arial",
+) -> dict:
+    """Per-object fit. Text in `substituted` fonts (rendered here with another font) is not
+    held to line-width tolerance; it is marked width_unverified instead."""
     page_h, page_w = source.shape[:2]
-    fits = [measure_object(obj, source, rendered, page_w, page_h) for obj in objects]
+    fits = [measure_object(obj, source, rendered, page_w, page_h, substituted, default_font) for obj in objects]
     measured = [f for f in fits if f["status"] in ("ok", "off", "missing_in_render", "extra_in_render")]
     ok = sum(1 for f in measured if f["status"] == "ok")
     worst = sorted((f for f in measured if f["status"] != "ok"), key=object_error, reverse=True)
@@ -322,6 +394,7 @@ def measure_page(objects: list[dict], source: np.ndarray, rendered: np.ndarray) 
         "within_tolerance": ok,
         "fit_ratio": round(ok / len(measured), 4) if measured else 1.0,
         "worst": [f["id"] for f in worst[:10]],
+        "width_unverified": [f["id"] for f in fits if f.get("width_unverified")],
         "font_hints": [
             {"id": f["id"], "weight_ratio": f.get("weight_ratio"), "hint": f["font_hint"]} for f in fits if f.get("font_hint")
         ],

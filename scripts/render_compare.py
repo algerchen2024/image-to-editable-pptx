@@ -30,7 +30,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import image_ops  # noqa: E402
 from font_check import font_report  # noqa: E402
-from object_fit import measure_page  # noqa: E402
+from object_fit import measure_page, substituted_fonts  # noqa: E402
 
 
 ASPECT_TOLERANCE = 0.01
@@ -136,7 +136,14 @@ def hotspots(diff_gray: np.ndarray, objects: list[dict]) -> list[dict]:
     return result
 
 
-def compare_images(source: np.ndarray, rendered: np.ndarray, objects: list[dict], outdir: Path | None) -> dict:
+def compare_images(
+    source: np.ndarray,
+    rendered: np.ndarray,
+    objects: list[dict],
+    outdir: Path | None,
+    substituted: set[str] | None = None,
+    default_font: str = "Arial",
+) -> dict:
     """Compare a source image with a rendered slide already resized to source size."""
     diff = np.abs(source.astype(np.int16) - rendered.astype(np.int16)).astype(np.uint8)
     diff_gray = diff.max(axis=2)
@@ -153,11 +160,18 @@ def compare_images(source: np.ndarray, rendered: np.ndarray, objects: list[dict]
         "hotspots": hotspots(diff_gray, objects),
     }
     if objects:
-        report["object_fit"] = measure_page(objects, source, rendered)
+        report["object_fit"] = measure_page(objects, source, rendered, substituted, default_font)
     return report
 
 
-def compare_page(source_path: Path, rendered_path: Path, outdir: Path | None, objects: list[dict]) -> dict:
+def compare_page(
+    source_path: Path,
+    rendered_path: Path,
+    outdir: Path | None,
+    objects: list[dict],
+    substituted: set[str] | None = None,
+    default_font: str = "Arial",
+) -> dict:
     source = np.array(Image.open(source_path).convert("RGB"))
     rendered_img = Image.open(rendered_path).convert("RGB")
     source_aspect = source.shape[1] / source.shape[0]
@@ -175,7 +189,7 @@ def compare_page(source_path: Path, rendered_path: Path, outdir: Path | None, ob
         "rendered_height": int(rendered_img.height),
         "aspect_error": round(aspect_error, 5),
         "aspect_ok": aspect_error <= ASPECT_TOLERANCE,
-        **compare_images(source, rendered, objects, outdir),
+        **compare_images(source, rendered, objects, outdir, substituted, default_font),
     }
 
 
@@ -188,6 +202,9 @@ def run_compare(sources: list[Path], pptx_path: Path, outdir: Path, payload: dic
     dpi = int(min(300, max(96, math.ceil(max_src_w / slide_width_inches(pptx_path)))))
     rendered = render_slides(pptx_path, outdir, dpi)
 
+    fonts = font_report(payload) if payload is not None else None
+    substituted = substituted_fonts({"fonts": fonts}) if fonts else set()
+    default_font = (payload or {}).get("default_font_face", "Arial")
     results = []
     problems = []
     if len(rendered) != len(sources):
@@ -197,7 +214,7 @@ def run_compare(sources: list[Path], pptx_path: Path, outdir: Path, payload: dic
         if write_images:
             page_dir = outdir if len(sources) == 1 else outdir / f"slide-{index}"
         objects = pages_ir[index - 1].get("objects", []) if index - 1 < len(pages_ir) else []
-        result = {"slide": index, **compare_page(source, rendered_path, page_dir, objects)}
+        result = {"slide": index, **compare_page(source, rendered_path, page_dir, objects, substituted, default_font)}
         if not result["aspect_ok"]:
             problems.append(f"slide {index} aspect ratio differs from source by {result['aspect_error']:.2%}")
         results.append(result)
@@ -206,7 +223,6 @@ def run_compare(sources: list[Path], pptx_path: Path, outdir: Path, payload: dic
 
     report: dict = {"pptx": str(pptx_path), "render_dpi": dpi, "slides": results}
     if payload is not None:
-        fonts = font_report(payload)
         report["fonts"] = fonts
         problems += fonts["problems"]
         fits = [r["object_fit"] for r in results if "object_fit" in r]

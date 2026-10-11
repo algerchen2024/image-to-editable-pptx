@@ -16,6 +16,7 @@ from pptx.util import Emu
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPILER = ROOT / "scripts" / "compile_page_ir.js"
+PY_COMPILER = ROOT / "scripts" / "compile_page_ir.py"
 NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main", "p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
 EMU_PER_IN = 914400
 
@@ -28,11 +29,12 @@ def node_ready() -> bool:
     return proc.returncode == 0
 
 
-def compile_ir(payload: dict, tmp: Path) -> Presentation:
+def compile_ir(payload: dict, tmp: Path, engine: str = "node") -> Presentation:
     ir = tmp / "page_ir.json"
     ir.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     out = tmp / "out.pptx"
-    proc = subprocess.run(["node", str(COMPILER), str(ir), str(out)], cwd=ROOT, capture_output=True, text=True, check=False)
+    cmd = ["node", str(COMPILER)] if engine == "node" else [sys.executable, str(PY_COMPILER)]
+    proc = subprocess.run([*cmd, str(ir), str(out)], cwd=ROOT, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise AssertionError(proc.stderr or proc.stdout)
     return Presentation(out)
@@ -42,8 +44,11 @@ def shape_by_name_order(prs: Presentation):
     return list(prs.slides[0].shapes)
 
 
-@unittest.skipUnless(node_ready(), "node with pptxgenjs is not available (run npm ci)")
-class CompileRoundTripTests(unittest.TestCase):
+class PythonCompilerTests(unittest.TestCase):
+    """The default compiler: python-pptx only, no Node."""
+
+    ENGINE = "python"
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -53,7 +58,7 @@ class CompileRoundTripTests(unittest.TestCase):
 
     def test_minimal_example_compiles(self):
         payload = json.loads((ROOT / "examples" / "minimal" / "page_ir.json").read_text(encoding="utf-8"))
-        prs = compile_ir(payload, self.tmp)
+        prs = compile_ir(payload, self.tmp, self.ENGINE)
         self.assertAlmostEqual(prs.slide_width / prs.slide_height, 1600 / 900, places=3)
 
     def test_reversed_lines_keep_direction(self):
@@ -64,7 +69,7 @@ class CompileRoundTripTests(unittest.TestCase):
                 {"id": "down", "type": "line", "points": [100, 100, 300, 500], "z": 3},
             ]
         )
-        prs = compile_ir(payload, self.tmp)
+        prs = compile_ir(payload, self.tmp, self.ENGINE)
         left, up, down = shape_by_name_order(prs)
         scale = prs.slide_width / 1600
         for shape in (left, up, down):
@@ -90,7 +95,7 @@ class CompileRoundTripTests(unittest.TestCase):
                 {"id": "dotted", "type": "line", "points": [100, 600, 700, 600], "style": {"dash": "dot"}},
             ]
         )
-        prs = compile_ir(payload, self.tmp)
+        prs = compile_ir(payload, self.tmp, self.ENGINE)
         card, dotted = shape_by_name_order(prs)
         xml = card._element
         self.assertEqual(xml.find(".//a:solidFill/a:srgbClr", NS).get("val"), "FFAA00")
@@ -114,7 +119,7 @@ class CompileRoundTripTests(unittest.TestCase):
                 }
             ]
         )
-        prs = compile_ir(payload, self.tmp)
+        prs = compile_ir(payload, self.tmp, self.ENGINE)
         (shape,) = shape_by_name_order(prs)
         runs = [r for p in shape.text_frame.paragraphs for r in p.runs]
         self.assertEqual([r.text for r in runs], ["Plain ", "bold"])
@@ -128,7 +133,7 @@ class CompileRoundTripTests(unittest.TestCase):
 
     def test_portrait_page_keeps_ratio(self):
         payload = page([], width=900, height=1600)
-        prs = compile_ir(payload, self.tmp)
+        prs = compile_ir(payload, self.tmp, self.ENGINE)
         self.assertAlmostEqual(Emu(prs.slide_height).inches, 7.5, places=2)
         self.assertAlmostEqual(prs.slide_width / prs.slide_height, 900 / 1600, places=3)
 
@@ -137,9 +142,15 @@ class CompileRoundTripTests(unittest.TestCase):
         import inspect_pptx
 
         payload = json.loads((ROOT / "examples" / "features" / "page_ir.json").read_text(encoding="utf-8"))
-        compile_ir(payload, self.tmp)
+        compile_ir(payload, self.tmp, self.ENGINE)
         report = inspect_pptx.inspect(self.tmp / "out.pptx")
         self.assertTrue(report["pass"], report)
+
+
+
+@unittest.skipUnless(node_ready(), "node with pptxgenjs is not available (run npm ci)")
+class NodeCompilerTests(PythonCompilerTests):
+    ENGINE = "node"
 
 
 def xfrm(shape):

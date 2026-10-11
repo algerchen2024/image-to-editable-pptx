@@ -11,6 +11,27 @@ Reconstruct the visible content of a flattened slide into an editable `.pptx` th
 
 Fidelity comes from measuring, not estimating: shapes are measured from the source pixels (`detect_shapes.py`), and every object is then measured again in the rendered result and corrected automatically (`fidelity_loop.py`). Your job is the part tools cannot do: correct wording, choose fonts, decide what is an image, and review what remains.
 
+## Running this skill
+
+Everything runs with the scripts in this skill's folder, the one that contains this `SKILL.md`. They need only `python3` with numpy, Pillow, python-pptx and lxml: no Node.js, no internet. LibreOffice and Poppler are needed for the fidelity loop. Start every conversion with:
+
+```bash
+SKILL_DIR="$(dirname "$(find / -name SKILL.md -path '*image-to-editable-pptx*' 2>/dev/null | head -1)")"
+cd "$SKILL_DIR" && python3 scripts/runtime_check.py --target mac
+```
+
+All commands below are relative to `$SKILL_DIR`. Keep the slide's own files (source image, PageIR, `quality/`) in a work folder and pass their paths.
+
+**Never improvise around the pipeline.** Each of these replaces the skill's measured result with a guess, so none is a "high fidelity" conversion:
+- writing your own python-pptx or other code that places text and shapes;
+- putting the source image into the deck;
+- replacing icons with characters such as ◯;
+- estimating sizes instead of running the loop.
+
+If the scripts cannot be found or a step fails, stop and tell the user the exact command and error, and what is missing. Offer to continue once it is fixed; do not deliver a substitute.
+
+**Gate results are quoted, never self-assessed.** Only `delivery_gate.py` decides HIGH, CLOSE, or FAIL. Paste its table into the report. If it was not run, the result is "not verified", not CLOSE or HIGH.
+
 ## Core rules
 
 - Treat the supplied raster or image-based slide as the visual source of truth.
@@ -36,7 +57,7 @@ python3 scripts/runtime_check.py --ocr-lang chi_sim+eng --target mac --installed
 If `cjk_render_ready` is false and the slide has Chinese text, install a CJK font for rendering (for example Noto Sans CJK, Source Han Sans, or WenQuanYi) **before** the first render; otherwise Chinese renders blank. A font installed only for rendering never goes into PageIR as `font_face`; see the next section.
 
 2. Inspect the source image visually. Record the source width and height. With several pages, keep one source image per slide, in order.
-3. Draft the text from OCR (estimated font sizes, sampled text and page colors):
+3. Text first. Draft it from OCR when Tesseract is available (estimated font sizes, sampled text and page colors):
 
 ```bash
 python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
@@ -44,15 +65,18 @@ python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --ta
   --installed-fonts "Microsoft YaHei,STKaiti" --prefer "sans=Microsoft YaHei,kai=STKaiti" --cjk-style sans --out page_ir.json
 ```
 
+Without OCR, write the text objects yourself from the image, with the same rules: one object per visual phrase, the source wording exactly, an approximate bbox and size (the loop corrects geometry and size later). Text must be in PageIR before the next step, so that glyphs are never mistaken for icons or rules.
+
 Treat the draft as evidence. Every text object carries a `note` with its OCR confidence. Correct wording, punctuation, line breaks, and weight against the source. Merge lines that belong to one paragraph. Put each visual phrase in **one** text object with `runs`: a number and its unit (`1,000` + `项`), a label and its count (`剔除【不合适】` + `127项`), a brand and its title (`WorkBuddy` + `平安内网…`). Separate boxes collide or drift apart as soon as the viewer's font differs from the render font, and the validator warns about them. Delete the notes you have resolved.
 
-4. Measure the shapes and add them to the draft. Panels, bordered cards, circles, and horizontal/vertical rules come back with measured position, size, fill, border color, stroke width, and corner radius:
+4. Icons, then shapes. First crop icons and other complex graphics as image assets: compact, multi-part or hollow artwork that is not text, cropped whole with a transparent background. Then measure the native shapes. Panels, bordered cards (including 1 px light-gray borders), bars, circles, axes and other horizontal/vertical rules come back with measured position, size, fill, border color, stroke width, and corner radius:
 
 ```bash
+python3 scripts/extract_assets.py source.png --merge page_ir.json --out page_ir.json --assets-dir assets
 python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json
 ```
 
-Then add what detection cannot see: arrows (set `end_arrow`), diagonal connectors, dashed borders, gradients, and icons. Measure any remaining colors with `sample_colors.py` instead of guessing. Crop complex visuals from the source so each asset matches its frame:
+Check each extracted asset: if one contains text that should be editable, delete it and add the text object instead. Then add what detection cannot see: arrows (set `end_arrow`), diagonal connectors, dashed borders, and gradients. Measure any remaining colors with `sample_colors.py` instead of guessing. Crop any further visual by hand with the same bbox as its PageIR frame:
 
 ```bash
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180
@@ -83,7 +107,7 @@ python3 scripts/inspect_pptx.py output.pptx
 
 9. Run `python3 scripts/delivery_gate.py quality` (one workdir per slide) and fix anything it reports. Then deliver the `.pptx` with the delivery report below, including the gate table.
 
-Without the loop (for example to try one manual change), `node scripts/compile_page_ir.js` compiles. `render_compare.py source.png output.pptx --outdir quality --page-ir page_ir.json` measures. `refine_pageir.py quality/metrics.json page_ir.json --out page_ir.json` applies one round of corrections.
+Without the loop (for example to try one manual change), `python3 scripts/compile_page_ir.py page_ir.json output.pptx` compiles (`node scripts/compile_page_ir.js` is an optional equivalent where PptxGenJS is installed). `render_compare.py source.png output.pptx --outdir quality --page-ir page_ir.json` measures. `refine_pageir.py quality/metrics.json page_ir.json --out page_ir.json` applies one round of corrections.
 
 ## Fonts for the user's machine
 
@@ -233,14 +257,14 @@ Only call the result "high fidelity" or "1:1" when `object_fit_ratio` ≥ 0.9. B
 - No CJK font for rendering: install one (see workflow step 1). If that is impossible, the comparison of Chinese text is invalid; say so.
 - No LibreOffice or Poppler: `fidelity_loop.py` and `render_compare.py` cannot run. Still run `detect_shapes.py`, `validate_page_ir.py`, and `inspect_pptx.py`. Say in the delivery report that no render comparison was performed, and do not claim 1:1 fidelity.
 - OpenCV is **not** required; all image tools use numpy and Pillow only.
-- No Node.js or PptxGenJS: report that the compiler cannot run; do not substitute a screenshot-based deck.
+- Node.js is not needed: the compiler is `compile_page_ir.py` (python-pptx). If python-pptx, numpy, Pillow or lxml is missing, report it and stop; do not substitute hand-written code or a screenshot-based deck.
 
 ## Delivery report
 
 End with the `.pptx` link and this report, filled with real numbers. Write "not measured" where a step could not run; never round a missing measurement up to "passed".
 
 ```text
-Gate: <delivery_gate table: level, object fit, uncovered ink, edge F1 per slide>
+Gate (pasted from delivery_gate.py): <its table and notes, verbatim>
 Pages: <n>, aspect <w:h> (matches source: yes/no)
 Per slide: editable text objects <n>, native shapes <n>, image objects <n>
 Fidelity loop: <rounds> rounds, best round <k>, delivered from page_ir.best.json: yes/no

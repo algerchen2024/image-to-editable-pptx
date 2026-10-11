@@ -136,7 +136,7 @@ python3 scripts/runtime_check.py --ocr-lang chi_sim+eng
 
 ```bash
 python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
-node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
+python3 scripts/compile_page_ir.py examples/minimal/page_ir.json example.pptx
 ```
 
 辅助编写 PageIR 的工具：
@@ -147,6 +147,7 @@ python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --ta
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # 实测颜色
 python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
 python3 scripts/install_fonts.py fonts/                                                          # 可选：用与交付一致的字体渲染
+python3 scripts/extract_assets.py source.png --merge page_ir.json --out page_ir.json            # 图标裁成图片素材
 python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # 实测面板、边框、分隔线
 python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # 编译、比对、自动校正
 python3 scripts/delivery_gate.py quality                                                         # 每页评级：HIGH / CLOSE / FAIL
@@ -177,7 +178,7 @@ python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out de
 python3 scripts/validate_skill.py .
 python3 -m unittest discover -s tests -v
 python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
-node scripts/compile_page_ir.js examples/minimal/page_ir.json /tmp/example.pptx
+python3 scripts/compile_page_ir.py examples/minimal/page_ir.json /tmp/example.pptx
 python3 scripts/inspect_pptx.py /tmp/example.pptx
 ```
 

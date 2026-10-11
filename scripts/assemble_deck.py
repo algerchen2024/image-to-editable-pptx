@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from validate_page_ir import validate_page_ir  # noqa: E402
 
 
-COMPILER = Path(__file__).resolve().parent / "compile_page_ir.js"
+from compile_page_ir import compile_payload  # noqa: E402
 
 
 def assemble(paths: list[Path]) -> dict:
@@ -79,10 +78,7 @@ def main() -> int:
     if errors:
         print(json.dumps({"error": "assembled PageIR is invalid", "errors": errors}, ensure_ascii=False, indent=2))
         return 2
-    proc = subprocess.run(["node", str(COMPILER), str(deck_ir), str(out)], capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        print(proc.stderr or proc.stdout)
-        return proc.returncode
+    compile_payload(deck, deck_ir.parent, out)
     from inspect_pptx import inspect
 
     report = inspect(out)

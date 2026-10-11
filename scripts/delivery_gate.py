@@ -116,6 +116,9 @@ def check_slide(workdir: Path, min_fit: float) -> dict:
         row["issues"] += [f"render: {p}" for p in metrics.get("problems", [])]
         row["object_fit_ratio"] = metrics.get("object_fit_ratio")
         row["edge_f1"] = [round(s["edge_f1"], 3) for s in metrics.get("slides", [])]
+        row["width_unverified"] = [
+            i for s in metrics.get("slides", []) for i in s.get("object_fit", {}).get("width_unverified", [])
+        ]
         row["objects_off"] = [
             f["id"]
             for s in metrics.get("slides", [])
@@ -202,6 +205,12 @@ def main() -> int:
             print(f"Do not deliver slides {failed}: finish their pipeline first.")
         if close:
             print(f"Slides {close} are close reconstructions, not 1:1; say so and list their objects_off.")
+        unverified = sum(len(r.get("width_unverified", [])) for r in rows)
+        if unverified:
+            print(
+                f"{unverified} text object(s) were checked with a substitute font: size and position are verified, "
+                "line widths are not. Say so in the report; render with the user's real font for a full check."
+            )
     return 0 if all(r["level"] != "FAIL" for r in rows) else 2
 
 

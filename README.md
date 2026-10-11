@@ -131,7 +131,7 @@ Validate and compile the included example:
 
 ```bash
 python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
-node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
+python3 scripts/compile_page_ir.py examples/minimal/page_ir.json example.pptx
 ```
 
 Helpers that speed up authoring PageIR from a source image:
@@ -142,6 +142,7 @@ python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --ta
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # measured colors
 python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
 python3 scripts/install_fonts.py fonts/                                                          # optional: render with the exact delivery font
+python3 scripts/extract_assets.py source.png --merge page_ir.json --out page_ir.json            # icons as image assets
 python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # measured panels, borders, rules
 python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # compile, compare, auto-correct
 python3 scripts/delivery_gate.py quality                                                         # HIGH / CLOSE / FAIL per slide
@@ -172,7 +173,7 @@ Run checks:
 python3 scripts/validate_skill.py .
 python3 -m unittest discover -s tests -v
 python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
-node scripts/compile_page_ir.js examples/minimal/page_ir.json /tmp/example.pptx
+python3 scripts/compile_page_ir.py examples/minimal/page_ir.json /tmp/example.pptx
 python3 scripts/inspect_pptx.py /tmp/example.pptx
 ```
 

@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -31,17 +30,17 @@ from render_compare import run_compare  # noqa: E402
 from validate_page_ir import validate_page_ir  # noqa: E402
 
 
-COMPILER = Path(__file__).resolve().parent / "compile_page_ir.js"
+from compile_page_ir import compile_payload  # noqa: E402
 PATIENCE = 2
 
 
 def compile_ir(payload: dict, ir_path: Path, pptx_path: Path) -> None:
+    """Compile with the Python compiler; relative assets resolve against the PageIR's folder."""
     ir_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    proc = subprocess.run(
-        ["node", str(COMPILER), str(ir_path), str(pptx_path)], capture_output=True, text=True, check=False
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"compile failed: {proc.stderr or proc.stdout}")
+    try:
+        compile_payload(json.loads(json.dumps(payload)), ir_path.parent, pptx_path)
+    except (ValueError, KeyError, OSError) as exc:
+        raise RuntimeError(f"compile failed: {exc}") from exc
 
 
 def mean_object_error(report: dict) -> float:

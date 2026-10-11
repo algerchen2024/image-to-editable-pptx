@@ -20,9 +20,12 @@ PYTHON_MODULES = {
     "numpy": "numpy",
     "pillow": "PIL",
     "python-pptx": "pptx",
+    "lxml": "lxml",
     "pytesseract": "pytesseract",
     "PyYAML": "yaml",
 }
+# Needed to convert a slide; the rest are optional (OCR, repository validation).
+CORE_MODULES = ("numpy", "pillow", "python-pptx", "lxml")
 
 
 def check_module(distribution: str, module: str) -> dict[str, Any]:
@@ -85,8 +88,9 @@ def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None 
     missing_langs = [item for item in requested_langs if item not in langs]
     pptxgenjs = node_has_pptxgenjs(executables["node"])
     renderer_available = bool(executables["soffice"] or executables["libreoffice"])
-    missing_python = [name for name, status in modules.items() if not status["available"]]
-    ready_core = not missing_python and bool(executables["node"]) and pptxgenjs["available"]
+    missing_python = [name for name in CORE_MODULES if not modules[name]["available"]]
+    # The Python compiler is the default; Node + PptxGenJS is an optional alternative.
+    ready_core = not missing_python
     compare_modules = ("numpy", "pillow", "python-pptx")
     ready_compare = (
         renderer_available
@@ -99,7 +103,8 @@ def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None 
         "ready_render_compare": ready_compare,
         "python_modules": modules,
         "executables": executables,
-        "pptxgenjs": pptxgenjs,
+        "pptxgenjs_optional": pptxgenjs,
+        "compiler": "scripts/compile_page_ir.py (python-pptx)",
         "ocr_requested": requested_langs,
         "ocr_languages_missing": missing_langs,
         "cjk_fonts": cjk_fonts,

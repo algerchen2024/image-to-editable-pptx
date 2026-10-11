@@ -78,7 +78,9 @@ def validate(root: Path) -> list[str]:
                 errors.extend(check_display_version(root, display))
     for relative in [
         "scripts/validate_page_ir.py",
-        "scripts/compile_page_ir.js",
+        "scripts/compile_page_ir.py",
+        "scripts/fidelity_loop.py",
+        "scripts/delivery_gate.py",
         "references/pageir-schema.md",
         "references/quality-checks.md",
     ]:
