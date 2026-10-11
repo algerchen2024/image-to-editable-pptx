@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.1",
+  "lang": "zh-CN",
+  "title": "PageIR 1.1 feature fixture",
+  "pages": [
+    {
+      "id": "slide-1",
+      "width_px": 1600,
+      "height_px": 900,
+      "background": "#FFF",
+      "objects": [
+        {
+          "id": "title",
+          "type": "text",
+          "bbox": [70, 50, 1300, 80],
+          "z": 10,
+          "runs": [
+            { "text": "PageIR 1.1: " },
+            { "text": "mixed runs", "bold": true, "color": "#F05A28" },
+            { "text": " in one line" }
+          ],
+          "style": {
+            "font_face": "Arial",
+            "font_size_pt": 30,
+            "color": "#111111",
+            "valign": "mid",
+            "wrap": false
+          }
+        },
+        {
+          "id": "card",
+          "type": "round_rect",
+          "bbox": [120, 220, 520, 300],
+          "z": 1,
+          "style": {
+            "fill": "#FFF4EF",
+            "line": "#F05A28",
+            "line_width_pt": 1.5,
+            "line_dash": "dash",
+            "corner_radius_px": 24
+          }
+        },
+        {
+          "id": "card-body",
+          "type": "text",
+          "bbox": [160, 260, 440, 220],
+          "z": 10,
+          "text": "多行正文\nSecond line with wider spacing",
+          "style": {
+            "font_face": "Microsoft YaHei",
+            "font_size_pt": 18,
+            "color": "#333",
+            "line_spacing_multiple": 1.3,
+            "char_spacing_pt": 0.5
+          }
+        },
+        {
+          "id": "arrow-left",
+          "type": "line",
+          "points": [1040, 330, 760, 330],
+          "z": 5,
+          "style": { "color": "#F05A28", "width_pt": 3, "end_arrow": "triangle" }
+        },
+        {
+          "id": "arrow-up-left",
+          "type": "line",
+          "points": [1240, 760, 1040, 560],
+          "z": 5,
+          "style": { "color": "#222222", "width_pt": 2, "dash": "dot", "end_arrow": "triangle" }
+        },
+        {
+          "id": "badge",
+          "type": "chevron",
+          "bbox": [1120, 250, 300, 160],
+          "rotation_deg": 90,
+          "z": 1,
+          "style": { "fill": "#F05A28", "line": null }
+        }
+      ]
+    }
+  ]
+}

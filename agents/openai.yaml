@@ -1,7 +1,7 @@
 interface:
-  display_name: "Image to Editable PPTX"
+  display_name: "GPT Image to Editable PPTX V5.3"
   short_description: "Rebuild flattened slides into source-faithful editable PowerPoint files"
-  default_prompt: "Convert the attached slide image into a highly faithful editable PPTX. Preserve the original ratio, wording, geometry, colors, and hierarchy; rebuild text and simple structures as editable PowerPoint objects; use a pure white background when requested; render and verify before delivery."
+  default_prompt: "Convert the attached slide image(s) into high-fidelity 1:1 editable PPTX, one slide at a time with the full workflow per slide (measure shapes, fidelity loop, delivery gate); never trade fidelity for speed. Preserve the original ratio, wording, geometry, colors, fonts, and hierarchy; rebuild text and simple structures as editable PowerPoint objects; use a pure white background when requested; report the gate results."
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
   brand_color: "#F05A28"

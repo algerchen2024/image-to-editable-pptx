@@ -17,25 +17,65 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
       - name: Install Node dependencies
-        run: npm install
+        run: npm ci
       - name: Validate skill structure
         run: python scripts/validate_skill.py .
       - name: Python syntax
         run: python -m compileall -q scripts tests
-      - name: Unit tests
+      - name: Unit and compiler round-trip tests
         run: python -m unittest discover -s tests -v
       - name: Validate example PageIR
-        run: python scripts/validate_page_ir.py examples/minimal/page_ir.json
+        run: |
+          python scripts/validate_page_ir.py examples/minimal/page_ir.json
+          python scripts/validate_page_ir.py examples/features/page_ir.json
       - name: Compile example PPTX
-        run: node scripts/compile_page_ir.js examples/minimal/page_ir.json /tmp/example.pptx
+        run: |
+          node scripts/compile_page_ir.js examples/minimal/page_ir.json /tmp/example.pptx
+          node scripts/compile_page_ir.js examples/features/page_ir.json /tmp/features.pptx
       - name: Inspect compiled PPTX
-        run: python scripts/inspect_pptx.py /tmp/example.pptx
+        run: |
+          python scripts/inspect_pptx.py /tmp/example.pptx
+          python scripts/inspect_pptx.py /tmp/features.pptx
       - name: Package skill
         run: python scripts/package_skill.py . --outdir dist
       - uses: actions/upload-artifact@v4
         with:
           name: skill-zip
           path: dist/skill.zip
+
+  render-compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install renderer
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress poppler-utils fonts-wqy-zenhei
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          npm ci
+      - name: Render the feature fixture as a synthetic source image
+        run: |
+          node scripts/compile_page_ir.js examples/features/page_ir.json /tmp/features.pptx
+          soffice --headless --convert-to pdf --outdir /tmp /tmp/features.pptx
+          pdftoppm -png -r 120 -singlefile /tmp/features.pdf /tmp/features
+          python -c "from PIL import Image; Image.open('/tmp/features.png').convert('RGB').resize((1600, 900)).save('/tmp/source.png')"
+      - name: Compare the compiled deck with the source
+        run: python scripts/render_compare.py /tmp/source.png /tmp/features.pptx --outdir quality --page-ir examples/features/page_ir.json
+      - name: Fidelity loop converges on a perturbed PageIR
+        run: python -m unittest tests.test_fidelity_loop -v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: render-compare
+          path: quality/

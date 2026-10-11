@@ -1,4 +1,3 @@
-opencv-python>=4.8
 numpy>=1.24
 pillow>=10
 python-pptx>=1.0

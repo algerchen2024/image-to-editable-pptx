@@ -7,7 +7,6 @@ This repository is primarily original project code and documentation. It relies 
 | Component | Used for | How it is consumed |
 |---|---|---|
 | `pptxgenjs` | Generate `.pptx` files from PageIR | Installed from npm |
-| `opencv-python` | Image analysis utilities | Installed from pip |
 | `numpy` | Numeric/image array operations | Installed from pip |
 | `pillow` | Image reading and writing | Installed from pip |
 | `python-pptx` | PPTX inspection and structural checks | Installed from pip |

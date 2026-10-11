@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install -r requirements.txt
-          npm install
+          npm ci
       - name: Validate and test
         run: |
           python scripts/validate_skill.py .
