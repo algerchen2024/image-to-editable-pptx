@@ -39,11 +39,21 @@ JOIN_PX = 20  # parts of one icon closer than this are one asset
 def _object_boxes(page: dict) -> list[list[float]]:
     boxes = []
     for obj in page.get("objects", []):
-        if obj.get("type") == "line" and isinstance(obj.get("points"), list):
-            x1, y1, x2, y2 = (float(v) for v in obj["points"])
-            boxes.append([min(x1, x2) - 3, min(y1, y2) - 3, abs(x2 - x1) + 6, abs(y2 - y1) + 6])
-        elif isinstance(obj.get("bbox"), list):
+        if obj.get("type") in ("text", "image") and isinstance(obj.get("bbox"), list):
             boxes.append([float(v) for v in obj["bbox"]])
+        elif obj.get("type") == "line" and isinstance(obj.get("points"), list):
+            x1, y1, x2, y2 = (float(v) for v in obj["points"])
+            pad = float((obj.get("style") or {}).get("width_pt", 1.0)) + 2.0
+            boxes.append([min(x1, x2) - pad, min(y1, y2) - pad, abs(x2 - x1) + 2 * pad, abs(y2 - y1) + 2 * pad])
+        elif isinstance(obj.get("bbox"), list):
+            x, y, w, h = (float(v) for v in obj["bbox"])
+            style = obj.get("style") or {}
+            if style.get("line") not in (None, "none", "transparent"):
+                pad = float(style.get("line_width_pt", 1.0)) + 2.0
+                boxes.append([x - pad, y - pad, w + 2 * pad, 2 * pad])
+                boxes.append([x - pad, y + h - pad, w + 2 * pad, 2 * pad])
+                boxes.append([x - pad, y - pad, 2 * pad, h + 2 * pad])
+                boxes.append([x + w - pad, y - pad, 2 * pad, h + 2 * pad])
     return boxes
 
 
@@ -93,8 +103,14 @@ def find_assets(image: np.ndarray, page: dict) -> list[list[int]]:
     ink = np.abs(img - border_color(img)).max(axis=2) > INK_CONTRAST
     sx, sy = w / float(page["width_px"]), h / float(page["height_px"])
     keep = np.ones((h, w), dtype=bool)
-    for bx, by, bw, bh in _object_boxes(page):
-        keep[max(0, int(by * sy)) : max(0, int((by + bh) * sy) + 1), max(0, int(bx * sx)) : max(0, int((bx + bw) * sx) + 1)] = False
+    for obj in page.get("objects", []):
+        if obj.get("type") in ("text", "image"):
+            boxes = _object_boxes({"objects": [obj]})
+            for bx, by, bw, bh in boxes:
+                keep[max(0, int(by * sy)) : max(0, int((by + bh) * sy) + 1), max(0, int(bx * sx)) : max(0, int((bx + bw) * sx) + 1)] = False
+        elif obj.get("type") == "line" or (obj.get("style") or {}).get("line"):
+            for bx, by, bw, bh in _object_boxes({"objects": [obj]}):
+                keep[max(0, int(by * sy)) : max(0, int((by + bh) * sy) + 1), max(0, int(bx * sx)) : max(0, int((bx + bw) * sx) + 1)] = False
     ink &= keep
     # Card borders and axes are hairlines for detect_shapes.py; remove them so they
     # neither bridge icons into one huge cluster nor leave corner pieces behind.

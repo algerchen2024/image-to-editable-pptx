@@ -8,6 +8,27 @@ The skill appears in ChatGPT as "GPT Image to Editable PPTX V<major>". Versions 
 
 The PageIR `schema_version` (currently 1.1) is the version of the internal JSON format and is numbered independently.
 
+## [5.4.1] - 2026-10-12 (V5.4.1)
+
+From two local field tests and two ChatGPT runs of V5.4 (both regression slides ended CLOSE at 0.58 and 0.82).
+
+Fonts, decoupled from any one user's setup:
+- New neutral target `any`: text uses theme fonts (`+mn-ea` / `+mn-lt`, titles `+mj-*`) and the theme carries no CJK font name, so the opening computer's system font is used. Use `mac` / `windows` only when the user says so.
+- East Asian and Latin slots are written separately (`a:ea` = `font_face`, `a:latin` / `a:cs` = new `latin_font_face`); Chinese fonts no longer set Latin text and digits.
+- Platform defaults list only fonts that ship with the OS (Office-only fonts removed). Docs use placeholders instead of example user fonts, and the skill never asks users to install fonts.
+- Verification renders use a separate render copy: fonts LibreOffice cannot draw are swapped for the closest drawable font of the same style, and the delivered PPTX keeps the delivery fonts. `render_fonts.py` confirms drawable fonts with a LibreOffice + `pdffonts` probe (macOS LibreOffice cannot draw system fonts such as PingFang or Helvetica Neue; V5.4 silently rendered Latin text in a serif fallback).
+- Width and weight are not tuned against substitutes (`width_unverified`, `weight_unverified`); the gate notes this instead of downgrading.
+- `runtime_check.py`: `ready_ocr` (pytesseract + Tesseract + language packs), `fonts.render_drawable`, `fonts.target_detected`, and hints.
+
+Fidelity loop:
+- Text measurement masks neighbouring text, images, shape borders and line strokes, keeps only ink clusters joined to the object (gap ≤ 0.9 em), and rejects implausible glyph heights. Fixes the ~3× title enlargement and drifting axis labels.
+- Font size changes are capped at ±15% per round and [0.5, 1.6]× overall; an object whose fit gets worse is restored, and frozen after a second strike.
+- Spaces between CJK and Latin/digits are kept only when the source shows a gap.
+- Arrows: the whole head is measured; open (`end_arrow: "open"`) and filled heads; `head_w` / `head_len` presets and custom `head_size_px` drawn as native shapes; stroke width is measured and corrected.
+- `extract_assets.py` finds icons inside cards that are already in PageIR (only text and image regions are excluded).
+
+Regression (two GPT-generated slides, `mac` / `any` / `windows`): all HIGH, object fit 1.0 / 1.0 / 0.95 and 0.95 / 0.95 / 0.95.
+
 ## [5.4.0] - 2026-10-11 (V5.4)
 
 From a ChatGPT run where the skill's scripts never ran: the model hand-wrote python-pptx code, put the source image under a text layer, replaced icons with "◯", and reported a gate result it had not computed. The likely root cause was the Node compiler: PptxGenJS is not in the skill package and cannot be installed without internet. Shape detection was also noisy on AI-generated slides.

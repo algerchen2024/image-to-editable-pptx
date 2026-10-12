@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
+// LEGACY PARITY COMPILER: Python compile_page_ir.py is authoritative for V5.4.1
+// font-slot splitting and neutral-theme patching. Keep this entry point compiling
+// older PageIR files when PptxGenJS is available.
 const fs = require('fs');
 const path = require('path');
 const PptxGenJS = require('pptxgenjs');
@@ -51,6 +54,7 @@ function mapDash(value) {
 }
 
 function mapArrow(value) {
+  if (value === 'open') return 'arrow';
   return value === 'triangle' ? 'triangle' : 'none';
 }
 

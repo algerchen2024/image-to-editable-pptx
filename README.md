@@ -138,7 +138,7 @@ Helpers that speed up authoring PageIR from a source image:
 
 ```bash
 python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
-python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target mac --out page_ir.json   # draft text objects
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target any --out page_ir.json   # draft text objects
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # measured colors
 python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
 python3 scripts/install_fonts.py fonts/                                                          # optional: render with the exact delivery font
@@ -153,7 +153,9 @@ Several images are converted one slide at a time with the full workflow each. `d
 
 `fidelity_loop.py` compiles the PageIR, renders it, measures every object against the source (edges for shapes, line by line for text), and corrects position, size, font size, wrapping, line spacing and letter spacing until objects match within 2 px. Image tools need only numpy and Pillow; OpenCV is not required.
 
-Fonts are chosen for the machine that opens the PPTX (`--target mac` gives PingFang SC / Helvetica Neue; `windows` gives Microsoft YaHei / Arial). The validator rejects render-sandbox fonts such as Noto Sans CJK unless the user has installed them too.
+Fonts are chosen for the machine that opens the PPTX. Use `--target mac` or `windows` only when the user says so; otherwise use `any`, which writes theme references (`+mn-ea` / `+mn-lt`) and reports that opening-machine fonts can change line width by ±3%.
+
+Text uses `font_face` for East Asian glyphs and optional `latin_font_face` for Latin glyphs. Lines may set `head_w` / `head_len` to `sm`, `med`, or `lg`; unusually wide arrowheads use `head_size_px`.
 
 ## PageIR
 

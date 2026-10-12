@@ -20,7 +20,7 @@ SHAPE_TYPES = {"rect", "round_rect", "ellipse", "triangle", "chevron"}
 ALLOWED_ALIGN = {"left", "center", "right"}
 ALLOWED_VALIGN = {"top", "mid", "bottom"}
 ALLOWED_DASH = {"solid", "dash", "dot", "dash_dot"}
-ALLOWED_ARROW = {"none", "triangle"}
+ALLOWED_ARROW = {"none", "triangle", "open"}
 IMAGE_ASPECT_TOLERANCE = 0.02
 PLATFORMS = {"mac", "windows", "any"}
 
@@ -66,8 +66,9 @@ def validate_run_style(style: dict, path: str, errors: list[str]) -> None:
     check_positive(style, "margin_pt", path, errors, allow_zero=True)
     if "char_spacing_pt" in style and not is_number(style["char_spacing_pt"]):
         errors.append(f"{path}.style.char_spacing_pt must be a number")
-    if "font_face" in style and (not isinstance(style["font_face"], str) or not style["font_face"].strip()):
-        errors.append(f"{path}.style.font_face must be a non-empty string")
+    for key in ("font_face", "latin_font_face"):
+        if key in style and (not isinstance(style[key], str) or not style[key].strip()):
+            errors.append(f"{path}.style.{key} must be a non-empty string")
 
 
 def validate_text(obj: dict, opath: str, errors: list[str]) -> None:
@@ -136,6 +137,13 @@ def validate_line(obj: dict, opath: str, page_w: float, page_h: float, errors: l
         errors.append(f"{opath}.style.dash is invalid")
     if style.get("start_arrow", "none") not in ALLOWED_ARROW or style.get("end_arrow", "none") not in ALLOWED_ARROW:
         errors.append(f"{opath}.style arrow type is invalid")
+    for key in ("head_w", "head_len"):
+        if key in style and style[key] not in {"sm", "med", "lg"}:
+            errors.append(f"{opath}.style.{key} must be one of sm, med, lg")
+    if "head_size_px" in style:
+        value = style["head_size_px"]
+        if not isinstance(value, list) or len(value) != 2 or not all(is_number(v) and float(v) > 0 for v in value):
+            errors.append(f"{opath}.style.head_size_px must be two positive numbers")
 
 
 def image_aspect_warning(obj: dict, image_path: Path, opath: str) -> str | None:
@@ -283,6 +291,10 @@ def validate_fonts(payload: dict) -> tuple[list[str], list[str]]:
         ):
             errors.append(f"target.font_preferences must map styles {list(FONT_STYLE_NAMES)} to font names")
     platform, installed = target_of(payload)
+    target_cfg = payload.get("target") or {}
+    installed = set(installed) | {
+        str(value) for value in (target_cfg.get("font_preferences") or {}).values() if isinstance(value, str)
+    }
     for name in sorted(page_ir_font_names(payload)):
         issue = font_issue(name, platform, installed)
         if issue:

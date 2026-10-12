@@ -100,6 +100,27 @@ def dominant_color(crop: np.ndarray) -> np.ndarray:
     return pixels[inverse.reshape(-1) == int(np.argmax(counts))].mean(axis=0)
 
 
+def fill_region_background(image: np.ndarray, region, mask: np.ndarray, bg_region=None) -> np.ndarray:
+    """Replace masked pixels with the region's dominant background color."""
+    out = image.copy()
+    h, w = image.shape[:2]
+    x0, y0, x1, y1 = (int(round(v)) for v in region)
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return out
+    if bg_region is not None:
+        bx0, by0, bx1, by1 = (int(round(v)) for v in bg_region)
+        bx0, by0, bx1, by1 = max(0, bx0), max(0, by0), min(w, bx1), min(h, by1)
+        if bx1 > bx0 and by1 > by0:
+            bg = dominant_color(image[by0:by1, bx0:bx1, :3])
+        else:
+            bg = dominant_color(image[y0:y1, x0:x1, :3])
+    else:
+        bg = dominant_color(image[y0:y1, x0:x1, :3])
+    out[y0:y1, x0:x1][mask[y0:y1, x0:x1]] = np.round(bg).astype(out.dtype)
+    return out
+
+
 def ink_box(image: np.ndarray, region, threshold: int = INK_THRESHOLD, ignore_border_ink: bool = False):
     """Bounding box [x0, y0, x1, y1] of pixels that differ from the region's border color.
 

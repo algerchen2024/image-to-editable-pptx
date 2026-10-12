@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import sys
+import zipfile
 from pathlib import Path
 
 from lxml import etree
@@ -25,7 +27,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Emu, Pt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pageir_common import normalize_hex, slide_size_inches  # noqa: E402
+from pageir_common import DEFAULT_FONTS, latin_font_for, normalize_hex, slide_size_inches  # noqa: E402
 
 
 EMU_PER_INCH = 914400
@@ -56,6 +58,7 @@ def set_line(shape_line, color, width_pt: float, dash: str | None) -> None:
     shape_line.color.rgb = rgb(color, "#111111")
     shape_line.width = Pt(width_pt)
     ln = shape_line._get_or_add_ln()
+    ln.set("cap", "rnd")
     for old in ln.findall(qn("a:prstDash")):
         ln.remove(old)
     prst = etree.Element(qn("a:prstDash"))
@@ -81,7 +84,7 @@ def set_rotation(shape, deg) -> None:
         shape.rotation = float(deg)
 
 
-def apply_run_style(run, style: dict, base: dict, lang: str) -> None:
+def apply_run_style(run, style: dict, base: dict, lang: str, platform: str, any_mode: bool) -> None:
     merged = {**base, **{k: v for k, v in style.items() if v is not None}}
     font = run.font
     font.size = Pt(float(merged.get("font_size_pt", 18)))
@@ -89,20 +92,23 @@ def apply_run_style(run, style: dict, base: dict, lang: str) -> None:
     font.italic = bool(merged.get("italic", False))
     font.underline = bool(merged.get("underline", False))
     font.color.rgb = rgb(merged.get("color"), "#111111")
-    face = merged.get("font_face") or "Arial"
+    face = merged.get("font_face") or base.get("font_face") or DEFAULT_FONTS.get(platform, DEFAULT_FONTS["any"])["cjk"]
+    latin = latin_font_for(merged, platform, str(face))
     rpr = run._r.get_or_add_rPr()
     rpr.set("lang", lang)
+    if any_mode:
+        rpr.set("altLang", "en-US")
     if merged.get("char_spacing_pt") is not None:
         rpr.set("spc", str(int(round(float(merged["char_spacing_pt"]) * 100))))
     for tag in ("a:latin", "a:ea", "a:cs"):
         for old in rpr.findall(qn(tag)):
             rpr.remove(old)
-    # Latin, East Asian and complex-script slots all get the face, as PptxGenJS does.
-    for tag in ("a:latin", "a:ea", "a:cs"):
-        _sub(rpr, tag, typeface=face)
+    _sub(rpr, "a:ea", typeface=face)
+    _sub(rpr, "a:latin", typeface=latin)
+    _sub(rpr, "a:cs", typeface=latin)
 
 
-def add_text(slide, obj: dict, box, lang: str) -> None:
+def add_text(slide, obj: dict, box, lang: str, platform: str, any_mode: bool) -> None:
     style = obj.get("style") or {}
     shape = slide.shapes.add_textbox(*box)
     tf = shape.text_frame
@@ -112,7 +118,8 @@ def add_text(slide, obj: dict, box, lang: str) -> None:
     tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = margin
     tf.vertical_anchor = VALIGN.get(style.get("valign", "top"), MSO_ANCHOR.TOP)
     base = {
-        "font_face": style.get("font_face") or "Arial",
+        "font_face": style.get("font_face") or DEFAULT_FONTS.get(platform, DEFAULT_FONTS["any"])["cjk"],
+        "latin_font_face": style.get("latin_font_face"),
         "font_size_pt": style.get("font_size_pt", 18),
         "bold": style.get("bold", False),
         "italic": style.get("italic", False),
@@ -143,7 +150,9 @@ def add_text(slide, obj: dict, box, lang: str) -> None:
         for text, run_style in items:
             run = para.add_run()
             run.text = text
-            apply_run_style(run, {k: v for k, v in run_style.items() if k != "text"}, base, lang)
+            apply_run_style(
+                run, {k: v for k, v in run_style.items() if k != "text"}, base, lang, platform, any_mode
+            )
     set_rotation(shape, obj.get("rotation_deg"))
 
 
@@ -171,18 +180,161 @@ def add_shape(slide, obj: dict, box, scale: float) -> None:
     set_rotation(shape, obj.get("rotation_deg"))
 
 
+def _positive_pair(value) -> tuple[float, float] | None:
+    if (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) > 0 for v in value)
+    ):
+        return float(value[0]), float(value[1])
+    return None
+
+
+def arrow_head_placement(x1: float, y1: float, x2: float, y2: float, head_w: float, head_l: float) -> dict | None:
+    """Shaft stops at the head base; the triangle tip sits on (x2, y2).
+
+    `head_w` is the base and `head_l` the altitude, both in source pixels.
+    Rotation is clockwise degrees from the preset triangle's upward tip.
+    """
+    dx, dy = x2 - x1, y2 - y1
+    dist = math.hypot(dx, dy)
+    if dist < 1:
+        return None
+    ux, uy = dx / dist, dy / dist
+    length = min(float(head_l), dist * 0.85)
+    base = (x2 - ux * length, y2 - uy * length)
+    center = (x2 - ux * length / 2.0, y2 - uy * length / 2.0)
+    return {
+        "shaft": (x1, y1, base[0], base[1]),
+        "center": center,
+        "width": float(head_w),
+        "height": length,
+        "rotation": math.degrees(math.atan2(ux, -uy)) % 360.0,
+    }
+
+
+def _add_arrow_head(slide, place: dict, color, sx: float, sy: float) -> None:
+    """Native solid isosceles triangle. Local width is the base, height the altitude."""
+    cx, cy = place["center"]
+    scale = (sx + sy) / 2.0
+    width = place["width"] * scale
+    height = max(place["height"] * scale, 1.0)
+    left = cx * sx - width / 2.0
+    top = cy * sy - height / 2.0
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.ISOSCELES_TRIANGLE,
+        Emu(int(round(left))),
+        Emu(int(round(top))),
+        Emu(int(round(width))),
+        Emu(int(round(max(height, 1.0)))),
+    )
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = rgb(color, "#111111")
+    shape.line.fill.background()
+    drop_theme_style(shape)
+    set_rotation(shape, place["rotation"])
+
+
+def _add_open_arrow_wings(slide, x1, y1, x2, y2, width_px, length_px, color, width_pt, dash, sx, sy):
+    dx, dy = x2 - x1, y2 - y1
+    dist = math.hypot(dx, dy)
+    if dist < 1:
+        return
+    ux, uy = dx / dist, dy / dist
+    px, py = -uy, ux
+    length = min(float(length_px), dist * 0.85)
+    bx, by = x2 - ux * length, y2 - uy * length
+    for ex, ey in ((bx + px * width_px / 2.0, by + py * width_px / 2.0),
+                   (bx - px * width_px / 2.0, by - py * width_px / 2.0)):
+        wing = slide.shapes.add_connector(
+            MSO_CONNECTOR.STRAIGHT,
+            Emu(int(round(ex * sx))), Emu(int(round(ey * sy))),
+            Emu(int(round(x2 * sx))), Emu(int(round(y2 * sy))),
+        )
+        drop_theme_style(wing)
+        set_line(wing.line, color, width_pt, dash)
+
+
 def add_line(slide, obj: dict, sx: float, sy: float) -> None:
     style = obj.get("style") or {}
     x1, y1, x2, y2 = (float(v) for v in obj["points"])
+    head = _positive_pair(style.get("head_size_px"))
+    place = None
+    if head:
+        # A start-only arrow's tip is the first point; otherwise the tip is the end point.
+        start_only = style.get("start_arrow") not in (None, "none") and style.get("end_arrow") in (None, "none")
+        if start_only:
+            place = arrow_head_placement(x2, y2, x1, y1, head[0], head[1])
+        else:
+            place = arrow_head_placement(x1, y1, x2, y2, head[0], head[1])
+    if place is not None and (
+        style.get("end_arrow") == "open" or style.get("start_arrow") == "open"
+    ):
+        # Open heads keep the shaft all the way to the tip and add two native
+        # line segments for the chevron wings.
+        conn = slide.shapes.add_connector(
+            MSO_CONNECTOR.STRAIGHT, Emu(int(x1 * sx)), Emu(int(y1 * sy)), Emu(int(x2 * sx)), Emu(int(y2 * sy))
+        )
+        drop_theme_style(conn)
+        set_line(conn.line, style.get("color"), float(style.get("width_pt", 1)), style.get("dash"))
+        if style.get("end_arrow") == "open":
+            _add_open_arrow_wings(
+                slide, x1, y1, x2, y2, head[0], head[1], style.get("color"), float(style.get("width_pt", 1)),
+                style.get("dash"), sx, sy
+            )
+        if style.get("start_arrow") == "open":
+            _add_open_arrow_wings(
+                slide, x2, y2, x1, y1, head[0], head[1], style.get("color"), float(style.get("width_pt", 1)),
+                style.get("dash"), sx, sy
+            )
+        return
+    if place is not None:
+        x1, y1, x2, y2 = place["shaft"]
     conn = slide.shapes.add_connector(
         MSO_CONNECTOR.STRAIGHT, Emu(int(x1 * sx)), Emu(int(y1 * sy)), Emu(int(x2 * sx)), Emu(int(y2 * sy))
     )
     drop_theme_style(conn)
     set_line(conn.line, style.get("color"), float(style.get("width_pt", 1)), style.get("dash"))
+    if place is not None:
+        # Custom triangle replaces DrawingML headEnd/tailEnd. Tip is the line's end point.
+        _add_arrow_head(slide, place, style.get("color"), sx, sy)
+        return
     ln = conn.line._get_or_add_ln()
     for key, tag in (("start_arrow", "a:headEnd"), ("end_arrow", "a:tailEnd")):
-        if style.get(key) == "triangle":
-            _sub(ln, tag, type="triangle")
+        if style.get(key) in {"triangle", "open"}:
+            attrs = {"type": "arrow" if style.get(key) == "open" else "triangle"}
+            if style.get("head_w") in {"sm", "med", "lg"}:
+                attrs["w"] = style["head_w"]
+            if style.get("head_len") in {"sm", "med", "lg"}:
+                attrs["len"] = style["head_len"]
+            _sub(ln, tag, **attrs)
+
+
+def _patch_any_theme(output: Path) -> None:
+    """Use opening-machine defaults for CJK and Arial for theme Latin text."""
+    patched = output.with_suffix(".theme-patched.pptx")
+    with zipfile.ZipFile(output, "r") as zin, zipfile.ZipFile(patched, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "ppt/theme/theme1.xml":
+                root = etree.fromstring(data)
+                for tag in ("a:majorFont", "a:minorFont"):
+                    block = root.find(f".//{qn(tag)}")
+                    if block is None:
+                        continue
+                    ea = block.find(qn("a:ea"))
+                    if ea is not None:
+                        ea.set("typeface", "")
+                    for slot in ("a:latin", "a:cs"):
+                        node = block.find(qn(slot))
+                        if node is not None:
+                            node.set("typeface", "Arial")
+                    for font in list(block):
+                        if font.tag == qn("a:font") and font.get("script") in {"Hans", "Hant", "Jpan", "Hang"}:
+                            block.remove(font)
+                data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+            zout.writestr(item, data)
+    patched.replace(output)
 
 
 def add_image(slide, obj: dict, box, base_dir: Path) -> None:
@@ -201,6 +353,9 @@ def compile_payload(payload: dict, base_dir: Path, output: Path) -> dict:
     aspect = float(first["width_px"]) / float(first["height_px"])
     width_in, height_in = slide_size_inches(float(first["width_px"]), float(first["height_px"]))
     lang = payload.get("lang") or "zh-CN"
+    target = payload.get("target")
+    platform = str(("mac" if target is None else (target or {}).get("platform") or "any")).lower()
+    any_mode = platform == "any"
 
     prs = Presentation()
     prs.slide_width = Emu(int(round(width_in * EMU_PER_INCH)))
@@ -226,13 +381,15 @@ def compile_payload(payload: dict, base_dir: Path, output: Path) -> dict:
             x, y, w, h = (float(v) for v in obj["bbox"])
             box = (Emu(int(round(x * sx))), Emu(int(round(y * sy))), Emu(int(round(w * sx))), Emu(int(round(h * sy))))
             if obj["type"] == "text":
-                add_text(slide, obj, box, page_lang)
+                add_text(slide, obj, box, page_lang, platform, any_mode)
             elif obj["type"] == "image":
                 add_image(slide, obj, box, base_dir)
             else:
                 add_shape(slide, obj, box, min(sx, sy))
     output.parent.mkdir(parents=True, exist_ok=True)
     prs.save(output)
+    if any_mode:
+        _patch_any_theme(output)
     return {"output": str(output), "slides": len(pages), "width_in": width_in, "height_in": height_in}
 
 

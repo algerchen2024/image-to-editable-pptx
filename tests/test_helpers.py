@@ -75,7 +75,7 @@ class OcrToPageIrTests(unittest.TestCase):
         payload = ocr_to_pageir.build_page_ir(ocr, {"cjk": "Microsoft YaHei", "latin": "Arial"}, image)
         objects = payload["pages"][0]["objects"]
         self.assertEqual(len(objects), 2)
-        self.assertEqual(objects[0]["style"]["font_face"], "Microsoft YaHei")
+        self.assertEqual(objects[0]["style"]["font_face"], "+mn-ea")
         self.assertEqual(objects[0]["style"]["color"], "#111111")
         self.assertIn("LOW", objects[1]["note"])
         self.assertEqual(payload["pages"][0]["background"], "#FFFFFF")

@@ -143,7 +143,7 @@ python3 scripts/compile_page_ir.py examples/minimal/page_ir.json example.pptx
 
 ```bash
 python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
-python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target mac --out page_ir.json   # 生成文本对象草稿
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target any --out page_ir.json   # 生成文本对象草稿
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # 实测颜色
 python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
 python3 scripts/install_fonts.py fonts/                                                          # 可选：用与交付一致的字体渲染
@@ -158,7 +158,9 @@ python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out de
 
 `fidelity_loop.py` 会编译 PageIR、渲染、把每个对象与原图逐一测量比对（形状按四条边，文字逐行），并自动校正位置、尺寸、字号、换行、行距和字间距，直到对象误差在 2 像素以内。图像工具只依赖 numpy 和 Pillow，不需要 OpenCV。
 
-字体按打开 PPTX 的电脑来选：`--target mac` 默认用苹方（PingFang SC）和 Helvetica Neue，`windows` 默认用微软雅黑和 Arial。渲染环境专用的字体（如 Noto Sans CJK）会被校验拦截，除非用户的电脑上也装了。
+字体按打开 PPTX 的电脑来选：只有用户明确说 Mac 或 Windows 时才使用对应平台；否则使用 `any`，写入 `+mn-ea` / `+mn-lt` 主题引用，并在报告中注明打开电脑可能造成行宽 ±3%。
+
+文字的 `font_face` 写入东亚字体槽，`latin_font_face` 写入西文字体槽。箭头可用 `head_w` / `head_len` 指定 `sm`、`med`、`lg`；超宽箭头使用 `head_size_px`。
 
 ## PageIR
 

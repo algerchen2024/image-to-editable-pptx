@@ -21,18 +21,18 @@ Schema `1.1` is a backward-compatible superset of `1.0`: every 1.0 file is a val
 ### Target machine and fonts
 
 ```json
-"target": {"platform": "mac", "installed_fonts": ["Noto Sans CJK SC"]}
+"target": {"platform": "any", "installed_fonts": []}
 ```
 
-Optionally add `"font_preferences": {"sans": "Microsoft YaHei", "kai": "STKaiti"}`: the user's font per typeface style. Styles: `sans`, `kai`, `song`, `fangsong`, `latin_sans`, `latin_serif`.
+Optionally add `"font_preferences": {"sans": "<user's sans font>"}`: the user's font per typeface style. Styles: `sans`, `kai`, `song`, `fangsong`, `latin_sans`, `latin_serif`.
 
 `target` describes where the PPTX will be opened. `platform` is `mac`, `windows`, or `any`. `installed_fonts` lists extra fonts the user has installed there.
 
 The validator then checks every `font_face`, including run fonts and `default_font_face`:
-- Render-sandbox fonts (Noto, WenQuanYi, DejaVu, Liberation, …) are **errors** unless listed in `installed_fonts`.
+- Render-sandbox-only fonts are **errors** unless listed in `installed_fonts`.
 - Fonts that are not standard on the target platform are **warnings**.
 
-Defaults are `PingFang SC` / `Helvetica Neue` on mac, and `Microsoft YaHei` / `Arial` on windows.
+Defaults are the platform table in the skill; with `any`, use `+mn-ea` and `+mn-lt`.
 
 Each page must contain:
 
@@ -79,7 +79,8 @@ Optional fields on any object:
   "bbox": [54, 36, 1150, 92],
   "text": "Editable title",
   "style": {
-    "font_face": "Microsoft YaHei",
+    "font_face": "<user's sans font>",
+    "latin_font_face": "<user's latin font>",
     "font_size_pt": 30,
     "bold": true,
     "italic": false,
@@ -121,7 +122,7 @@ Use `runs` instead of `text` when one line mixes weight, color, size, or font:
 }
 ```
 
-Each run may set `font_face`, `font_size_pt`, `bold`, `italic`, `underline`, `color`, and `char_spacing_pt`. Anything a run leaves out comes from the object's `style`.
+Each run may set `font_face`, `latin_font_face`, `font_size_pt`, `bold`, `italic`, `underline`, `color`, and `char_spacing_pt`. Anything a run leaves out comes from the object's `style`. `font_face` is written to `a:ea`; `latin_font_face` is written to `a:latin` and `a:cs`. Old files with only `font_face` use the platform Latin default unless that face is already Latin.
 
 Keep each visual phrase in one object with runs: a number and its unit, a label and its count, a brand and its title. The validator warns when separate text objects sit on one line, because they collide or drift apart when the viewer's font differs from the render font.
 
@@ -162,7 +163,9 @@ Use `rect`, `round_rect`, `ellipse`, `triangle`, or `chevron`.
     "width_pt": 2.0,
     "dash": "solid",
     "start_arrow": "none",
-    "end_arrow": "triangle"
+    "end_arrow": "triangle",
+    "head_w": "med",
+    "head_len": "med"
   }
 }
 ```
@@ -170,6 +173,8 @@ Use `rect`, `round_rect`, `ellipse`, `triangle`, or `chevron`.
 - `points` are `[x1, y1, x2, y2]` and may run in any direction: right-to-left and bottom-to-top lines keep their direction and arrowheads.
 - Zero-length lines are rejected.
 - Supported dash values are `solid`, `dash`, `dot`, and `dash_dot`.
+- Arrow heads accept `head_w` and `head_len` values `sm`, `med`, or `lg`; `start_arrow`/`end_arrow` may also be `open` for a stroked chevron.
+- Optional `head_size_px` is `[width, length]` in source pixels, both positive. When it is set, the compiler stops the shaft at the base of the head and draws a native solid isosceles triangle (no DrawingML `headEnd` / `tailEnd`), with the tip on the line's end point. Use it when the head is wider than about 6 stroke widths.
 
 ## Image asset
 

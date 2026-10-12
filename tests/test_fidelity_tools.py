@@ -106,8 +106,17 @@ class ObjectFitTests(unittest.TestCase):
         self.assertAlmostEqual(fit["scale_h"], 0.8)
         page = {"width_px": 1600, "height_px": 900, "objects": [obj]}
         object_fit.refine_page(page, [fit])
-        self.assertEqual(obj["style"]["font_size_pt"], 17.5)
+        # V5.4.1 caps one-round font changes at -13%; the uncapped 0.8
+        # correction would be 17.5 pt, so the safe result is 19 pt.
+        self.assertEqual(obj["style"]["font_size_pt"], 19.0)
         self.assertLess(obj["bbox"][0], 104)  # also moved left onto the source anchor
+
+    def test_subpoint_font_change_takes_one_half_point(self):
+        obj = {"id": "y-60", "type": "text", "bbox": [0, 0, 40, 20], "text": "60", "style": {"font_size_pt": 12.5}}
+        # 6.7% is under a point, so the snap must not jump a whole point to 11.5.
+        changed, _clamped = object_fit._scale_fonts(obj, 0.933)
+        self.assertTrue(changed)
+        self.assertEqual(obj["style"]["font_size_pt"], 12.0)
 
     def test_wrap_detected_for_single_line(self):
         src, d = canvas()
@@ -263,6 +272,76 @@ class WeightAndLineTests(unittest.TestCase):
         lines = image_ops.ink_lines(np.array(image), [100, 60, 520, 220], bg_region=[120, 110, 480, 166])
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0][1:4:2], [120, 156])
+
+
+    def test_substituted_font_uses_only_extreme_weight_evidence(self):
+        src, d = canvas()
+        self.outline_blocks(d, 100, 100, 600, 30, 6)
+        ren, d = canvas()
+        self.outline_blocks(d, 100, 100, 600, 30, 3)
+        obj = {
+            "id": "t",
+            "type": "text",
+            "bbox": [96, 95, 620, 40],
+            "text": "x" * 17,
+            "style": {"font_size_pt": 30, "font_face": "PingFang SC"},
+        }
+        fit = object_fit.measure_object(obj, np.array(src), np.array(ren), 1600, 900, substituted={"PingFang SC"})
+        self.assertGreaterEqual(fit["weight_ratio"], 1.35)
+        self.assertEqual(fit["weight_fix"], "bold")
+
+    def test_glyphs_under_16px_skip_weight(self):
+        src, draw = canvas()
+        self.outline_blocks(draw, 100, 100, 600, 10, 4)
+        ren, draw = canvas()
+        self.outline_blocks(draw, 100, 100, 600, 10, 1)
+        obj = {"id": "t", "type": "text", "bbox": [96, 96, 620, 20], "text": "x" * 17, "style": {"font_size_pt": 12}}
+        fit = object_fit.measure_object(obj, np.array(src), np.array(ren), 1600, 900)
+        self.assertLess(fit["first_line_source"][3] - fit["first_line_source"][1], 16)
+        self.assertIsNone(fit.get("weight_fix"))
+        self.assertNotIn("weight_ratio", fit)
+
+
+class GapClusterTests(unittest.TestCase):
+    def glyphs(self, draw, x, y, n, gw=10, gh=20, gap=4):
+        for i in range(n):
+            gx = x + i * (gw + gap)
+            draw.rectangle([gx, y, gx + gw - 1, y + gh - 1], fill=(17, 17, 17))
+        return n * gw + (n - 1) * gap
+
+    def test_middle_phrase_excludes_neighbours_1_5em_away(self):
+        # 960px-wide page: 20pt is about 20px, so 1.5em = 30px and 0.9em = 18px.
+        image, d = canvas(960, 540)
+        self.glyphs(d, 120, 80, 11)
+        self.glyphs(d, 300, 80, 11)
+        self.glyphs(d, 480, 80, 11)
+        obj = {
+            "id": "mid",
+            "type": "text",
+            "bbox": [300, 50, 150, 80],
+            "text": "中" * 11,
+            "style": {"font_size_pt": 20},
+        }
+        fit = object_fit.measure_object(obj, np.array(image), np.array(image), 960, 540)
+        self.assertLess(fit["source_width"], 180)
+        self.assertGreater(fit["first_line_source"][0], 290)
+        self.assertLess(fit["first_line_source"][2], 460)
+
+    def test_text_mask_expands_other_text_by_0_3_em(self):
+        obj = {"id": "a", "type": "text", "bbox": [100, 100, 80, 30], "style": {"font_size_pt": 20}}
+        other = {"id": "b", "type": "text", "bbox": [300, 100, 40, 20], "style": {"font_size_pt": 20}}
+        mask = object_fit._measurement_mask(obj, [obj, other], [0, 0, 960, 540], 960, 540)
+        em = object_fit._em_px(other, 960, 540)
+        self.assertTrue(mask[110, int(300 - 0.15 * em)])
+        self.assertFalse(mask[110, int(300 - 0.8 * em)])
+
+    def test_icon_base_above_box_is_not_the_first_line(self):
+        obj = {"id": "t", "type": "text", "bbox": [100, 100, 80, 30], "style": {"font_size_pt": 20}}
+        # Centre is 0.6em above the box: inside the old fallback, outside the 0.5em band.
+        icon = [100, 80, 140, 88]
+        text = [100, 104, 180, 124]
+        kept = object_fit._lines_in_vertical_band([icon, text], obj, 960, 540)
+        self.assertEqual(kept, [text])
 
 
 class FontProfileTests(unittest.TestCase):

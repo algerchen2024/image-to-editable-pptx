@@ -45,7 +45,7 @@ def assemble(paths: list[Path]) -> dict:
             if deck is None:
                 deck = {k: v for k, v in payload.items() if k != "pages"}
                 deck["pages"] = []
-                deck.setdefault("target", {"platform": "mac", "installed_fonts": []})
+                deck.setdefault("target", {"platform": "any", "installed_fonts": []})
             else:
                 target = payload.get("target") or {}
                 if target.get("platform") and target.get("platform") != deck["target"].get("platform"):

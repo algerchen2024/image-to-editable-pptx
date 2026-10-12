@@ -127,6 +127,10 @@ def check_slide(workdir: Path, min_fit: float) -> dict:
         ]
         exact = [s for s in (metrics.get("fonts") or {}).get("substitutions", []) if not s.get("substituted")]
         row["exact_fonts"] = [s["requested"] for s in exact]
+        target_platform = ((json.loads(best_ir.read_text(encoding="utf-8")).get("target") or {}).get("platform")
+                           if best_ir.exists() else None)
+        if target_platform == "any" or row["width_unverified"]:
+            row.setdefault("notes", []).append("字体由打开的电脑决定/替代字体校验，行宽可能 ±3%")
 
     sources = summary.get("sources") or []
     if best_ir.exists() and sources:
@@ -192,6 +196,8 @@ def main() -> int:
             issues = list(r["issues"])
             if r.get("missing_regions"):
                 issues.append(f"content not in PageIR at {r['missing_regions']}")
+            if r.get("notes"):
+                issues.extend(r["notes"])
             print(
                 f"| {i} | {r['level']} | {fit if fit is not None else '-'} | {r.get('uncovered_ink', '-')} | "
                 f"{r.get('edge_f1', '-')} | {r.get('rounds', 0)} | {', '.join(r.get('objects_off', [])[:6]) or '-'} | "

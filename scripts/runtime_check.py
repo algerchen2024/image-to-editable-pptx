@@ -14,6 +14,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from font_check import cjk_font_families, font_plan  # noqa: E402
+from pageir_common import FONT_STYLE_NAMES, choose_font  # noqa: E402
+from render_fonts import detect_render_fonts, scan_font_dirs  # noqa: E402
 
 
 PYTHON_MODULES = {
@@ -80,7 +82,7 @@ def node_has_pptxgenjs(node: str | None) -> dict[str, Any]:
     return {"available": True, "version": proc.stdout.strip() or "available"}
 
 
-def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None = None) -> dict[str, Any]:
+def build_report(ocr_lang: str, target: str = "any", installed: set[str] | None = None) -> dict[str, Any]:
     modules = {name: check_module(name, module) for name, module in PYTHON_MODULES.items()}
     executables = {name: shutil.which(name) for name in ("python3", "node", "tesseract", "pdftoppm", "soffice", "libreoffice")}
     langs = tesseract_languages(executables["tesseract"])
@@ -91,6 +93,7 @@ def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None 
     missing_python = [name for name in CORE_MODULES if not modules[name]["available"]]
     # The Python compiler is the default; Node + PptxGenJS is an optional alternative.
     ready_core = not missing_python
+    ocr_ready = bool(modules["pytesseract"]["available"] and executables["tesseract"] and not missing_langs)
     compare_modules = ("numpy", "pillow", "python-pptx")
     ready_compare = (
         renderer_available
@@ -98,8 +101,15 @@ def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None 
         and all(modules[name]["available"] for name in compare_modules)
     )
     cjk_fonts = cjk_font_families()
+    render_fonts = detect_render_fonts()
+    detected_target = sorted(scan_font_dirs()) if sys.platform == "darwin" else []
+    recommendations = {}
+    for style in FONT_STYLE_NAMES:
+        face, exact = choose_font(style, target, installed or set(), None, set(render_fonts["families"]))
+        recommendations[style] = {"font": face, "exact_render": exact}
     return {
         "ready_core": ready_core,
+        "ready_ocr": ocr_ready,
         "ready_render_compare": ready_compare,
         "python_modules": modules,
         "executables": executables,
@@ -109,12 +119,27 @@ def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None 
         "ocr_languages_missing": missing_langs,
         "cjk_fonts": cjk_fonts,
         "cjk_render_ready": bool(cjk_fonts),
-        "fonts": font_plan(target, installed or set()),
+        "fonts": {
+            **font_plan(target, installed or set()),
+            "render_drawable": render_fonts["families"],
+            "target_detected": detected_target,
+            "exact_match_fonts": sorted(set((font_plan(target, installed or set()).get("exact_match_fonts") or [])) | set(
+                f for f in detected_target if f.lower() in {x.lower() for x in render_fonts["families"]}
+            )),
+            "recommended": recommendations,
+        },
+        "hints": [
+            hint
+            for hint in (
+                "pip install pytesseract" if not modules["pytesseract"]["available"] else None,
+                "install tesseract + requested language packs" if not executables["tesseract"] or missing_langs else None,
+            )
+            if hint
+        ],
         "notes": [
             "No OpenCV needed: render comparison and fidelity_loop use numpy + Pillow only.",
-            "cjk_render_ready=false means Chinese renders blank; install a CJK font (Noto Sans CJK, "
-            "Source Han Sans, WenQuanYi) for verification renders before comparing. Keep PageIR font_face unchanged.",
-            "OCR language packs are optional if text is transcribed by another trusted method.",
+            "cjk_render_ready=false means Chinese render comparison may be incomplete; keep PageIR font_face unchanged.",
+            "OCR is ready only when pytesseract, tesseract, and all requested language packs are available.",
             "LibreOffice and pdftoppm are needed only for the provided render-comparison script.",
         ],
     }
@@ -123,7 +148,7 @@ def build_report(ocr_lang: str, target: str = "mac", installed: set[str] | None 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ocr-lang", default="eng", help="Tesseract language expression, e.g. chi_sim+eng")
-    parser.add_argument("--target", choices=["mac", "windows"], default="mac", help="platform that opens the PPTX")
+    parser.add_argument("--target", choices=["mac", "windows", "any"], default="any", help="platform that opens the PPTX")
     parser.add_argument(
         "--installed-fonts",
         default="",

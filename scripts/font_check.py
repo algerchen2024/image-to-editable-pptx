@@ -79,8 +79,8 @@ def font_plan(platform: str, installed: set[str], preferences: dict | None = Non
     if families is None:
         return {"fontconfig_available": False}
     lowered = {f.lower() for f in families}
-    platform_key = platform if platform in PLATFORM_FONTS else "mac"
-    target_fonts = PLATFORM_FONTS[platform_key] | OFFICE_FONTS | set(installed)
+    platform_key = platform if platform in PLATFORM_FONTS or platform == "any" else "any"
+    target_fonts = (PLATFORM_FONTS.get(platform_key, set()) | OFFICE_FONTS | set(installed))
     exact = sorted(f for f in target_fonts if f.lower() in lowered)
     recommended = {}
     for style in FONT_STYLE_NAMES:

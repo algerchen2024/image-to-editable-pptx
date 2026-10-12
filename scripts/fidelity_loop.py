@@ -61,6 +61,82 @@ def score(report: dict) -> tuple[float, float, float]:
     return (fit if fit is not None else 0.0, -round(mean_object_error(report), 2), -mae)
 
 
+def _font_sizes(obj: dict) -> tuple:
+    style = obj.get("style") or {}
+    sizes = [style.get("font_size_pt")]
+    for run in obj.get("runs") or []:
+        if isinstance(run, dict):
+            sizes.append(run.get("font_size_pt"))
+    return tuple(sizes)
+
+
+def apply_rollbacks(
+    payload: dict,
+    slides: list[dict],
+    pending: dict,
+    strikes: dict[str, int],
+    frozen: set[str],
+) -> tuple[list[str], list[str], dict]:
+    """Restore objects whose last edit got worse. Freeze only on the second strike.
+
+    The returned limits apply on the next refine, after the restored object is
+    measured again: a reverted font-size edit may only move, and a reverted
+    shape or line takes a half step. Nothing is written onto the PageIR object.
+    """
+    rolled: list[str] = []
+    newly_frozen: list[str] = []
+    limits: dict[str, dict] = {}
+    for slide in slides:
+        page_index = int(slide["slide"]) - 1
+        pages = payload.get("pages", [])
+        if page_index < 0 or page_index >= len(pages):
+            continue
+        page = pages[page_index]
+        page_id = str(page.get("id", f"slide-{slide['slide']}"))
+        fits = {str(f.get("id")): f for f in (slide.get("object_fit") or {}).get("objects", [])}
+        for key, item in list(pending.items()):
+            if not key.startswith(page_id + ":"):
+                continue
+            oid = key.split(":", 1)[1]
+            now = fits.get(oid)
+            if now is None:
+                continue
+            before = item["fit"]
+            current = next((obj for obj in page.get("objects", []) if str(obj.get("id")) == oid), None)
+            size_changed = (
+                current is not None
+                and current.get("type") == "text"
+                and _font_sizes(current) != _font_sizes(item["object"])
+            )
+            size_improved = (
+                size_changed
+                and before.get("scale_h") is not None
+                and now.get("scale_h") is not None
+                and abs(float(now["scale_h"]) - 1.0) < abs(float(before["scale_h"]) - 1.0)
+            )
+            # A font-size correction is useful even when its first render also
+            # exposes a positional drift; position is corrected on the next round.
+            worsened = not size_improved and object_error(now) - object_error(before) > 0.5
+            status_regressed = before.get("status") == "ok" and now.get("status") == "off"
+            if (worsened or status_regressed) and not size_improved:
+                if current is not None:
+                    kind = current.get("type")
+                    current.clear()
+                    current.update(json.loads(json.dumps(item["object"])))
+                    strikes[key] = int(strikes.get(key, 0)) + 1
+                    rolled.append(key)
+                    if strikes[key] >= 2:
+                        frozen.add(key)
+                        frozen.add(oid)
+                        newly_frozen.append(key)
+                    elif kind == "text" and size_changed:
+                        limits[key] = {"position_only": True}
+                    elif kind != "text":
+                        limits[key] = {"step_scale": 0.5}
+            pending.pop(key, None)
+    return rolled, newly_frozen, limits
+
+
 def absolutize_assets(payload: dict, base_dir: Path) -> dict:
     """Copy of payload with relative image paths made absolute, so the PageIR works from any folder."""
     out = json.loads(json.dumps(payload))
@@ -95,12 +171,31 @@ def main() -> int:
     history = []
     best = None
     stale = 0
+    frozen: set[str] = set()
+    strikes: dict[str, int] = {}
+    next_limits: dict[str, dict] = {}
+    baseline_fonts = {
+        str(obj.get("id")): float((obj.get("style") or {}).get("font_size_pt", 18))
+        for page in payload.get("pages", [])
+        for obj in page.get("objects", [])
+        if obj.get("type") == "text"
+    }
+    pending: dict[str, dict] = {}
     try:
         for round_no in range(1, args.rounds + 1):
             pptx = workdir / f"round-{round_no}.pptx"
             compile_ir(payload, round_ir, pptx)
-            report = run_compare(sources, pptx, workdir / f"round-{round_no}", payload, write_images=False)
+            report = run_compare(
+                sources, pptx, workdir / f"round-{round_no}", payload, write_images=False, base_dir=ir_path.parent
+            )
             current = score(report)
+            rolled, newly_frozen, later_limits = apply_rollbacks(
+                payload, report.get("slides", []), pending, strikes, frozen
+            )
+            # Limits from the previous rollback apply now, on a fresh measurement.
+            # Objects restored this round are skipped: their fit belongs to the edit we just undid.
+            limits = next_limits
+            next_limits = later_limits
             history.append(
                 {
                     "round": round_no,
@@ -110,6 +205,11 @@ def main() -> int:
                     "edge_f1": [round(s["edge_f1"], 4) for s in report["slides"]],
                 }
             )
+            if rolled:
+                history[-1]["rollback"] = rolled
+                history[-1]["strikes"] = {key: strikes[key] for key in rolled}
+            if newly_frozen:
+                history[-1]["frozen"] = newly_frozen
             if best is None or current > best[0]:
                 best = (current, json.loads(json.dumps(payload)), pptx, report)
                 stale = 0
@@ -119,7 +219,39 @@ def main() -> int:
                     break  # corrections stopped helping
             if report.get("object_fit_ratio") == 1.0:
                 break
-            payload, changed = refine_payload(payload, report["slides"], substituted_fonts(report))
+            before_payload = json.loads(json.dumps(payload))
+            payload, changed = refine_payload(
+                payload, report["slides"], substituted_fonts(report), baseline_fonts, frozen, limits, set(rolled)
+            )
+            for key in changed:
+                page_name, oid = key.split(":", 1)
+                page = next((p for p in before_payload.get("pages", []) if str(p.get("id")) == page_name), None)
+                if page:
+                    old_obj = next((o for o in page.get("objects", []) if str(o.get("id")) == oid), None)
+                    if old_obj is not None:
+                        slide_index = next(i for i, p in enumerate(payload.get("pages", [])) if str(p.get("id")) == page_name)
+                        old_fit = next(
+                            (
+                                f
+                                for f in (report["slides"][slide_index].get("object_fit") or {}).get("objects", [])
+                                if str(f.get("id")) == oid
+                            ),
+                            None,
+                        )
+                        if old_fit is not None:
+                            pending[key] = {"object": old_obj, "fit": old_fit}
+            clamped_list = []
+            suspect_list = []
+            for s in report.get("slides", []):
+                s_idx = int(s["slide"]) - 1
+                pid = payload.get("pages", [])[s_idx].get("id", f"slide-{s['slide']}") if s_idx < len(payload.get("pages", [])) else f"slide-{s['slide']}"
+                for f in (s.get("object_fit") or {}).get("objects", []):
+                    if f.get("clamped"):
+                        clamped_list.append(f"{pid}:{f['id']}")
+                    if f.get("suspect"):
+                        suspect_list.append(f"{pid}:{f['id']}")
+            history[-1]["clamped"] = clamped_list
+            history[-1]["suspect"] = suspect_list
             history[-1]["changed"] = changed
             if not changed:
                 break
@@ -134,7 +266,7 @@ def main() -> int:
     )
     shutil.copy2(best_pptx, args.out)
     # Final artefacts (overlay, heatmap, metrics) for the delivered deck.
-    final = run_compare(sources, Path(args.out), workdir / "final", best_payload)
+    final = run_compare(sources, Path(args.out), workdir / "final", best_payload, base_dir=ir_path.parent)
     (workdir / "final" / "metrics.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = {
         "output": str(Path(args.out).resolve()),

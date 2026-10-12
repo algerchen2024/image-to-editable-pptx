@@ -26,7 +26,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from image_ops import border_color, dilate, label_components  # noqa: E402
+from image_ops import border_color, dilate, ink_box, label_components  # noqa: E402
 from pageir_common import pt_per_px, rgb_to_hex  # noqa: E402
 
 
@@ -37,6 +37,156 @@ MIN_COLOR_SHARE = 0.0008
 MIN_STROKE_SHARE = 0.0001  # a 1 px rule is only a few hundred pixels
 MAX_COLORS = 24
 MIN_PANEL = 20
+def classify_arrow_head(ratio: float) -> str:
+    """Map measured head width/stroke width to DrawingML's sm/med/lg."""
+    if ratio < 3:
+        return "sm"
+    if ratio < 5:
+        return "med"
+    return "lg"
+
+
+HEAD_SIZE_RATIO = 6.0
+
+
+def rule_arrow_decision(rule: dict) -> dict:
+    """Preset DrawingML head, measured triangle, or image when direction is unknown.
+
+    A head wider than 6 stroke widths is ``head_size_px`` (native triangle).
+    Cropping to an image is only the fallback when the line has no direction.
+    """
+    arrow = rule.get("arrow") or {}
+    if not arrow:
+        return {"mode": "none"}
+    ratio = float(arrow.get("ratio") or 0)
+    arrow_kind = arrow.get("kind", "triangle")
+    if ratio <= HEAD_SIZE_RATIO:
+        size = arrow.get("size") or classify_arrow_head(ratio)
+        return {"mode": "preset", "arrow": arrow_kind, "head_w": size, "head_len": size}
+    points = rule.get("points") or []
+    if len(points) != 4:
+        return {"mode": "image"}
+    x1, y1, x2, y2 = (float(v) for v in points)
+    if math.hypot(x2 - x1, y2 - y1) < 8:
+        return {"mode": "image"}
+    return {
+        "mode": "head_size",
+        "arrow": arrow_kind,
+        "head_size_px": [round(float(arrow["head_w_px"]), 1), round(float(arrow["head_len_px"]), 1)],
+    }
+
+
+def measure_arrow_head(image: np.ndarray, points: list[float], color: str, stroke_px: float) -> dict | None:
+    """Measure a triangular arrow head around the line's second endpoint.
+
+    The result is intentionally conservative: a head is reported only when
+    the endpoint has a connected ink cluster wider than the shaft.
+    """
+    if not isinstance(points, list) or len(points) != 4 or stroke_px <= 0:
+        return None
+    x1, y1, x2, y2 = (float(v) for v in points)
+    vx, vy = x2 - x1, y2 - y1
+    length = math.hypot(vx, vy)
+    if length < 8:
+        return None
+    ux, uy = vx / length, vy / length
+    px, py = -uy, ux
+    h, w = image.shape[:2]
+    radius = int(max(24, min(120, round(20 * stroke_px))))
+    x0, x1i = max(0, int(round(x2)) - radius), min(w, int(round(x2)) + radius + 1)
+    y0, y1i = max(0, int(round(y2)) - radius), min(h, int(round(y2)) + radius + 1)
+    if x1i <= x0 or y1i <= y0:
+        return None
+    from pageir_common import normalize_hex
+
+    digits = normalize_hex(color)[1:]
+    target = np.array([int(digits[i : i + 2], 16) for i in (0, 2, 4)], dtype=np.int32)
+    crop = image[y0:y1i, x0:x1i, :3].astype(np.int32)
+    mask = np.abs(crop - target).max(axis=2) <= 48
+    ys, xs = np.nonzero(mask)
+    if len(xs) < max(8, int(stroke_px * 3)):
+        return None
+    # Only the ink connected to the tip. A same-colored icon inside the search
+    # radius (the bookmark above arrow-3) is not part of the head.
+    tip_x = float(x2) - x0
+    tip_y = float(y2) - y0
+    dist2 = (xs.astype(np.float64) - tip_x) ** 2 + (ys.astype(np.float64) - tip_y) ** 2
+    seed_i = int(np.argmin(dist2))
+    reach = max(12.0, 3.0 * float(stroke_px))
+    if float(dist2[seed_i]) > reach * reach:
+        return None
+    sy, sx = int(ys[seed_i]), int(xs[seed_i])
+    keep = np.zeros(mask.shape, dtype=bool)
+    stack = [(sy, sx)]
+    keep[sy, sx] = True
+    mh, mw = mask.shape
+    while stack:
+        cy, cx = stack.pop()
+        for dy in (-1, 0, 1):
+            ny = cy + dy
+            if ny < 0 or ny >= mh:
+                continue
+            for dx in (-1, 0, 1):
+                nx = cx + dx
+                if nx < 0 or nx >= mw or keep[ny, nx] or not mask[ny, nx]:
+                    continue
+                keep[ny, nx] = True
+                stack.append((ny, nx))
+    mask = keep
+    ys, xs = np.nonzero(mask)
+    if len(xs) < max(8, int(stroke_px * 3)):
+        return None
+    gx, gy = xs + x0 - x2, ys + y0 - y2
+    longitudinal = gx * ux + gy * uy
+    lat_signed = gx * px + gy * py
+    lateral = np.abs(lat_signed)
+    near = (longitudinal <= radius) & (longitudinal >= -radius)
+    if not near.any():
+        return None
+    wing_thresh = max(1.5, stroke_px * 0.7)
+    wings = (lateral >= wing_thresh) & near
+    if not wings.any():
+        return None
+    if not ((lat_signed[wings] > wing_thresh).any() and (lat_signed[wings] < -wing_thresh).any()):
+        return None
+    head_width = float(lat_signed[wings].max() - lat_signed[wings].min() + 1)
+    neg_span = max(0.0, -float(np.percentile(longitudinal[wings], 2)))
+    pos_span = max(0.0, float(np.percentile(longitudinal[wings], 98)))
+    forward = -1.0 if neg_span >= pos_span else 1.0
+    if forward < 0:
+        base_long = float(longitudinal[wings].min())
+        tip_long = float(longitudinal.max())
+    else:
+        base_long = float(longitudinal[wings].max())
+        tip_long = float(longitudinal.min())
+    head_len = max(abs(tip_long - base_long) + 1.0, stroke_px * 1.2)
+    ratio = head_width / max(float(stroke_px), 1.0)
+    if ratio < 1.6 or head_len < 1.2 * stroke_px:
+        return None
+    tip_wx = float(x2 + tip_long * ux)
+    tip_wy = float(y2 + tip_long * uy)
+    gy_grid, gx_grid = np.mgrid[y0:y1i, x0:x1i]
+    cx_grid = gx_grid.astype(np.float64) - tip_wx
+    cy_grid = gy_grid.astype(np.float64) - tip_wy
+    long_grid = cx_grid * ux + cy_grid * uy
+    across_grid = cx_grid * px + cy_grid * py
+    depth_grid = -long_grid if forward < 0 else long_grid
+    triangle = (depth_grid >= -0.5) & (depth_grid <= head_len + 0.5) & (
+        np.abs(across_grid) <= (np.maximum(0.0, depth_grid) / head_len) * (head_width / 2.0) + 0.5
+    )
+    head_region = triangle & (np.abs(across_grid) >= stroke_px * 0.6)
+    tri_area = float(head_region.sum())
+    ink_in_tri = float((mask & head_region).sum())
+    fill_ratio = (ink_in_tri / tri_area) if tri_area > 0 else 1.0
+    kind = "open" if fill_ratio < 0.45 else "triangle"
+    return {
+        "head_w_px": round(head_width, 2),
+        "head_len_px": round(head_len, 2),
+        "ratio": round(ratio, 3),
+        "size": classify_arrow_head(ratio),
+        "kind": kind,
+        "fill_ratio": round(fill_ratio, 3),
+    }
 
 
 def candidate_colors(
@@ -408,7 +558,9 @@ def rules_to_outlines(rules: list[dict], ink: np.ndarray, slack: float = 6.0) ->
     return outlines, [r for r in rules if id(r) not in used]
 
 
-def detect(image: np.ndarray, exclude: list[list[float]] | None = None) -> list[dict]:
+def detect(
+    image: np.ndarray, exclude: list[list[float]] | None = None, assets_dir: Path | str | None = None
+) -> list[dict]:
     page_h, page_w = image.shape[:2]
     ppx = pt_per_px(page_w, page_h)
     background = border_color(image.astype(np.int32))
@@ -503,6 +655,24 @@ def detect(image: np.ndarray, exclude: list[list[float]] | None = None) -> list[
     boxes_from_rules, rules = rules_to_outlines(rules, ink)
     outlines += boxes_from_rules
     rules = join_collinear(rules, panels)
+    for rule in rules:
+        head = measure_arrow_head(image, rule["points"], rule["color"], rule["thickness"])
+        if head is None:
+            # Thin-line extraction can stop at the head base when a filled
+            # triangle interrupts the shaft. Probe the connected same-colour
+            # component farther along the known rule direction.
+            x1, y1, x2, y2 = (float(v) for v in rule["points"])
+            dist = math.hypot(x2 - x1, y2 - y1)
+            if dist >= 8:
+                ux, uy = (x2 - x1) / dist, (y2 - y1) / dist
+                for extra in (8.0, 16.0, 24.0, 40.0, 64.0):
+                    probe = [x1, y1, x2 + ux * extra, y2 + uy * extra]
+                    found = measure_arrow_head(image, probe, rule["color"], rule["thickness"])
+                    if found:
+                        head = found
+                        break
+        if head:
+            rule["arrow"] = head
 
     objects: list[dict] = []
     shapes = [("panel", p) for p in panels] + [("outline", o) for o in outlines]
@@ -535,14 +705,49 @@ def detect(image: np.ndarray, exclude: list[list[float]] | None = None) -> list[
             }
         )
     for index, rule in enumerate(sorted(rules, key=lambda r: (r["points"][1], r["points"][0])), start=1):
+        decision = rule_arrow_decision(rule)
+        if decision["mode"] == "image" and assets_dir:
+            hw = rule["arrow"]["head_w_px"]
+            min_x = max(0, int(min(rule["points"][0], rule["points"][2]) - hw / 2 - 4))
+            min_y = max(0, int(min(rule["points"][1], rule["points"][3]) - hw / 2 - 4))
+            max_x = min(image.shape[1], int(max(rule["points"][0], rule["points"][2]) + hw / 2 + 4))
+            max_y = min(image.shape[0], int(max(rule["points"][1], rule["points"][3]) + hw / 2 + 4))
+            ibox = ink_box(image, [min_x, min_y, max_x, max_y])
+            if ibox and ibox[2] > ibox[0] and ibox[3] > ibox[1]:
+                adir = Path(assets_dir)
+                adir.mkdir(parents=True, exist_ok=True)
+                crop_img = Image.fromarray(image[ibox[1]:ibox[3], ibox[0]:ibox[2]])
+                asset_filename = f"arrow-{index}.png"
+                crop_img.save(adir / asset_filename)
+                rel_path = (Path(assets_dir).name + "/" + asset_filename) if not str(assets_dir).startswith("/") else str(adir / asset_filename)
+                objects.append(
+                    {
+                        "id": f"rule-{index}",
+                        "type": "image",
+                        "bbox": [ibox[0], ibox[1], ibox[2] - ibox[0], ibox[3] - ibox[1]],
+                        "path": rel_path,
+                        "z": 1,
+                        "note": "detected arrow head; direction undetermined, cropped as image",
+                    }
+                )
+                continue
+        style = {"color": rule["color"], "width_pt": round(max(rule["thickness"], 1) * ppx, 2)}
+        note = "detected rule"
+        if decision["mode"] == "preset":
+            style.update({"end_arrow": decision["arrow"], "head_w": decision["head_w"], "head_len": decision["head_len"]})
+        elif decision["mode"] == "head_size":
+            style.update({"end_arrow": decision["arrow"], "head_size_px": decision["head_size_px"]})
+            note = "detected arrow head; head/stroke > 6, native triangle"
+        elif decision["mode"] == "image":
+            note = "detected arrow head; direction undetermined, crop as image"
         objects.append(
             {
                 "id": f"rule-{index}",
                 "type": "line",
                 "points": [round(v, 1) for v in rule["points"]],
                 "z": 1,
-                "style": {"color": rule["color"], "width_pt": round(max(rule["thickness"], 1) * ppx, 2)},
-                "note": "detected rule",
+                "style": style,
+                "note": note,
             }
         )
     return objects
@@ -553,6 +758,7 @@ def main() -> int:
     parser.add_argument("image")
     parser.add_argument("--merge", help="PageIR to add detected objects to (its text boxes are excluded)")
     parser.add_argument("--page", type=int, default=1, help="1-based page index used with --merge")
+    parser.add_argument("--assets-dir", help="folder to save cropped oversized arrow images")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     image = np.array(Image.open(args.image).convert("RGB"))
@@ -574,7 +780,11 @@ def main() -> int:
             if o.get("type") in ("text", "image") and isinstance(o.get("bbox"), list)
         ]
 
-    objects = detect(image, exclude)
+    out = Path(args.out)
+    assets_dir = None
+    if args.assets_dir:
+        assets_dir = (out.parent / args.assets_dir) if not Path(args.assets_dir).is_absolute() else Path(args.assets_dir)
+    objects = detect(image, exclude, assets_dir=assets_dir)
     if payload is not None:
         page = payload["pages"][args.page - 1]
         taken = {str(o.get("id")) for o in page.get("objects", [])}
@@ -588,7 +798,6 @@ def main() -> int:
         output = payload
     else:
         output = {"width_px": image.shape[1], "height_px": image.shape[0], "objects": objects}
-    out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     counts: dict[str, int] = {}

@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import image_ops  # noqa: E402
 from font_check import font_report  # noqa: E402
 from object_fit import measure_page, substituted_fonts  # noqa: E402
+from compile_page_ir import compile_payload  # noqa: E402
+from render_fonts import substitute_payload, substitutions_for_payload  # noqa: E402
 
 
 ASPECT_TOLERANCE = 0.01
@@ -193,48 +195,105 @@ def compare_page(
     }
 
 
-def run_compare(sources: list[Path], pptx_path: Path, outdir: Path, payload: dict | None, write_images: bool = True) -> dict:
+def run_compare(
+    sources: list[Path],
+    pptx_path: Path,
+    outdir: Path,
+    payload: dict | None = None,
+    write_images: bool = True,
+    base_dir: Path | None = None,
+) -> dict:
     """Render `pptx_path`, compare each slide with its source and return the report."""
     outdir.mkdir(parents=True, exist_ok=True)
     pages_ir = (payload or {}).get("pages", [])
     # Render at least at source resolution so thin strokes survive.
-    max_src_w = max(Image.open(p).width for p in sources)
+    with Image.open(sources[0]) as first_source:
+        max_src_w = first_source.width
+    for source_path in sources[1:]:
+        with Image.open(source_path) as source_image:
+            max_src_w = max(max_src_w, source_image.width)
     dpi = int(min(300, max(96, math.ceil(max_src_w / slide_width_inches(pptx_path)))))
-    rendered = render_slides(pptx_path, outdir, dpi)
+    render_pptx = pptx_path
+    render_copy_dir = None
+    fonts = None
+    render_copy_error = None
+    try:
+        if payload is not None:
+            render_payload, substitutions = substitute_payload(payload)
+            render_copy_dir = tempfile.TemporaryDirectory(prefix="pptx-render-copy-")
+            render_copy_path = Path(render_copy_dir.name) / "render-copy.pptx"
+            resolved_base_dir = base_dir.resolve() if base_dir is not None else Path.cwd()
+            relative_assets = [
+                Path(obj["path"])
+                for page in payload.get("pages", [])
+                for obj in page.get("objects", [])
+                if obj.get("type") == "image" and isinstance(obj.get("path"), str) and not Path(obj["path"]).is_absolute()
+            ]
+            if relative_assets and base_dir is None:
+                candidates = [resolved_base_dir, pptx_path.parent, *[s.parent for s in sources], *(s.parent.parent for s in sources)]
+                for candidate in candidates:
+                    if all((candidate / asset).exists() for asset in relative_assets):
+                        resolved_base_dir = candidate
+                        break
+            render_copy_error = None
+            try:
+                compile_payload(render_payload, resolved_base_dir, render_copy_path)
+                render_pptx = render_copy_path
+            except Exception as exc:
+                # Keep measuring the delivery deck, but do not hide the failure.
+                render_copy_error = f"render copy compile failed: {exc}"
+                render_pptx = pptx_path
+            fonts = {
+                **(font_report(payload) if payload is not None else {}),
+                "substitutions": substitutions,
+                "render_drawable": sorted(
+                    {x.get("rendered_with") for x in substitutions if x.get("rendered_with")}
+                ),
+            }
+            substituted = {
+                x["requested"]
+                for x in substitutions
+                if x.get("substituted") and not x.get("metric_compatible")
+            }
+        else:
+            substituted = set()
+        rendered = render_slides(render_pptx, outdir, dpi)
+        default_font = (payload or {}).get("default_font_face", "Arial")
+        results = []
+        problems = []
+        if render_copy_error:
+            problems.append(render_copy_error)
+        if len(rendered) != len(sources):
+            problems.append(f"{len(sources)} source image(s) but {len(rendered)} rendered slide(s)")
+        for index, (source, rendered_path) in enumerate(zip(sources, rendered), start=1):
+            page_dir = None
+            if write_images:
+                page_dir = outdir if len(sources) == 1 else outdir / f"slide-{index}"
+            objects = pages_ir[index - 1].get("objects", []) if index - 1 < len(pages_ir) else []
+            result = {"slide": index, **compare_page(source, rendered_path, page_dir, objects, substituted, default_font)}
+            if not result["aspect_ok"]:
+                problems.append(f"slide {index} aspect ratio differs from source by {result['aspect_error']:.2%}")
+            results.append(result)
+        for path in rendered:
+            path.unlink(missing_ok=True)
 
-    fonts = font_report(payload) if payload is not None else None
-    substituted = substituted_fonts({"fonts": fonts}) if fonts else set()
-    default_font = (payload or {}).get("default_font_face", "Arial")
-    results = []
-    problems = []
-    if len(rendered) != len(sources):
-        problems.append(f"{len(sources)} source image(s) but {len(rendered)} rendered slide(s)")
-    for index, (source, rendered_path) in enumerate(zip(sources, rendered), start=1):
-        page_dir = None
-        if write_images:
-            page_dir = outdir if len(sources) == 1 else outdir / f"slide-{index}"
-        objects = pages_ir[index - 1].get("objects", []) if index - 1 < len(pages_ir) else []
-        result = {"slide": index, **compare_page(source, rendered_path, page_dir, objects, substituted, default_font)}
-        if not result["aspect_ok"]:
-            problems.append(f"slide {index} aspect ratio differs from source by {result['aspect_error']:.2%}")
-        results.append(result)
-    for path in rendered:
-        path.unlink(missing_ok=True)
-
-    report: dict = {"pptx": str(pptx_path), "render_dpi": dpi, "slides": results}
-    if payload is not None:
-        report["fonts"] = fonts
-        problems += fonts["problems"]
-        fits = [r["object_fit"] for r in results if "object_fit" in r]
-        measured = sum(f["measured"] for f in fits)
-        within = sum(f["within_tolerance"] for f in fits)
-        report["object_fit_ratio"] = round(within / measured, 4) if measured else None
-    report["problems"] = problems
-    report["note"] = "MAE, edge F1 and hotspots are review signals; renderer and font differences change pixel scores."
-    if len(results) == 1:
-        # Keep the flat v0.1 keys for single-slide callers.
-        report.update({k: results[0][k] for k in ("source_width", "source_height", "normalized_mae", "edge_f1")})
-    return report
+        report: dict = {"pptx": str(pptx_path), "render_pptx": str(render_pptx), "render_dpi": dpi, "slides": results}
+        if payload is not None:
+            report["fonts"] = fonts
+            problems += fonts["problems"]
+            fits = [r["object_fit"] for r in results if "object_fit" in r]
+            measured = sum(f["measured"] for f in fits)
+            within = sum(f["within_tolerance"] for f in fits)
+            report["object_fit_ratio"] = round(within / measured, 4) if measured else None
+        report["problems"] = problems
+        report["note"] = "MAE, edge F1 and hotspots are review signals; renderer and font differences change pixel scores."
+        if len(results) == 1:
+            # Keep the flat v0.1 keys for single-slide callers.
+            report.update({k: results[0][k] for k in ("source_width", "source_height", "normalized_mae", "edge_f1")})
+        return report
+    finally:
+        if render_copy_dir is not None:
+            render_copy_dir.cleanup()
 
 
 def main() -> int:
