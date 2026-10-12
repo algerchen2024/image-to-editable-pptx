@@ -103,7 +103,7 @@ def apply_rollbacks(
                 continue
             before = item["fit"]
             current = next((obj for obj in page.get("objects", []) if str(obj.get("id")) == oid), None)
-            size_changed = (
+            size_changed = bool(item.get("size_changed")) or (
                 current is not None
                 and current.get("type") == "text"
                 and _font_sizes(current) != _font_sizes(item["object"])
@@ -239,7 +239,22 @@ def main() -> int:
                             None,
                         )
                         if old_fit is not None:
-                            pending[key] = {"object": old_obj, "fit": old_fit}
+                            new_obj = next(
+                                (o for o in payload["pages"][slide_index].get("objects", []) if str(o.get("id")) == oid),
+                                None,
+                            )
+                            pending[key] = {
+                                "object": old_obj,
+                                "fit": old_fit,
+                                # Keep the edit classification explicit.  A
+                                # same-round spacing/position edit can obscure
+                                # the font delta when inferred from the live
+                                # object during rollback.
+                                "size_changed": (
+                                    new_obj is not None
+                                    and _font_sizes(new_obj) != _font_sizes(old_obj)
+                                ),
+                            }
             clamped_list = []
             suspect_list = []
             for s in report.get("slides", []):

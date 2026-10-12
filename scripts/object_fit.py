@@ -46,6 +46,7 @@ SUBSTITUTED_WEIGHT_RATIO_LOW = 0.65
 CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 LATIN_RE = re.compile(r"[A-Za-z0-9]")
 FULLWIDTH_PUNCTUATION = set("，。；：！？、（）【】《》「」『』“”‘’％·…—～")
+SEPARATOR_PUNCTUATION = set("·/")
 
 
 def position_tolerance(page_w: float) -> float:
@@ -788,7 +789,12 @@ def _spacing_boundaries(text: str) -> list[tuple[int, int]]:
             continue
         left_cjk, right_cjk = bool(CJK_RE.fullmatch(left)), bool(CJK_RE.fullmatch(right))
         left_lat, right_lat = bool(LATIN_RE.fullmatch(left)), bool(LATIN_RE.fullmatch(right))
-        punctuation = left in FULLWIDTH_PUNCTUATION or right in FULLWIDTH_PUNCTUATION
+        punctuation = (
+            left in FULLWIDTH_PUNCTUATION
+            or right in FULLWIDTH_PUNCTUATION
+            or left in SEPARATOR_PUNCTUATION
+            or right in SEPARATOR_PUNCTUATION
+        )
         if (left_cjk and right_lat) or (left_lat and right_cjk) or punctuation:
             boundaries.append((match.start(), match.end()))
     return boundaries
@@ -813,17 +819,39 @@ def _boundary_gap(image, line, text: str, span: tuple[int, int], bg_box) -> floa
     return max(0.0, float(clusters[right_idx][0] - clusters[left_idx][1]))
 
 
-def _needs_spacing_removal(text: str, src_image, ren_image, src_line, ren_line, bg_box) -> list[tuple[int, int]]:
-    """Compare source/render boundary gaps, including substituted-font renders."""
+def _needs_spacing_removal(
+    text: str,
+    src_image,
+    ren_image,
+    src_line,
+    ren_line,
+    bg_box,
+    source_em: float = 1.0,
+    render_em: float = 1.0,
+) -> list[tuple[int, int]]:
+    """Compare source/render boundary gaps after normalizing each to its own em.
+
+    A real separator such as ``·`` or ``/`` is allowed to retain its spaces:
+    when the source gap is at least a quarter of the source em, removing it
+    would turn intentional typography into a false correction.
+    """
     boundaries = _spacing_boundaries(text)
-    return [
-        span
-        for span in boundaries
-        if
-        (src_gap := _boundary_gap(src_image, src_line, text, span, bg_box)) is not None
-        and (ren_gap := _boundary_gap(ren_image, ren_line, text, span, bg_box)) is not None
-        and src_gap < 0.6 * ren_gap
-    ]
+    source_em = max(float(source_em), 1e-6)
+    render_em = max(float(render_em), 1e-6)
+    separators = {"·", "/"}
+    removals = []
+    for span in boundaries:
+        src_gap = _boundary_gap(src_image, src_line, text, span, bg_box)
+        ren_gap = _boundary_gap(ren_image, ren_line, text, span, bg_box)
+        if src_gap is None or ren_gap is None:
+            continue
+        left = text[: span[0]].rstrip()[-1:]
+        right = text[span[1] :].lstrip()[:1]
+        if (left in separators or right in separators) and src_gap / source_em >= 0.25:
+            continue
+        if src_gap / source_em < 0.6 * (ren_gap / render_em):
+            removals.append(span)
+    return removals
 
 
 def _merge_gap_clusters(clusters, x0: float, x1: float, gap_max: float) -> list[tuple[int, int]]:
@@ -1224,11 +1252,27 @@ def measure_text(
             "pitch_ratio": round(pitch_ratio, 4) if pitch_ratio is not None else None,
         }
     )
-    spacing_spans = _needs_spacing_removal(
-        text_of(obj), source, rendered, s0, r0, bg_box=[float(obj["bbox"][0]), float(obj["bbox"][1]),
-                                                       float(obj["bbox"][0] + obj["bbox"][2]),
-                                                       float(obj["bbox"][1] + obj["bbox"][3])]
-    ) if same_lines else []
+    spacing_spans = []
+    # Do not infer whitespace corrections while a font-size correction is
+    # still needed: source and render ems are not comparable in that state.
+    if same_lines and abs(scale_h - 1) <= 2 * SIZE_TOLERANCE:
+        render_em = _em_px(obj, page_w, page_h)
+        source_em = render_em * scale_h
+        spacing_spans = _needs_spacing_removal(
+            text_of(obj),
+            source,
+            rendered,
+            s0,
+            r0,
+            bg_box=[
+                float(obj["bbox"][0]),
+                float(obj["bbox"][1]),
+                float(obj["bbox"][0] + obj["bbox"][2]),
+                float(obj["bbox"][1] + obj["bbox"][3]),
+            ],
+            source_em=source_em,
+            render_em=render_em,
+        )
     if spacing_spans:
         result["spacing_remove"] = True
         result["spacing_spans"] = spacing_spans
@@ -1461,7 +1505,7 @@ def _scale_fonts(obj: dict, factor: float) -> tuple[bool, bool]:
 
 def _remove_cjk_latin_spaces(obj: dict, spans: list[tuple[int, int]] | None = None) -> bool:
     boundary = r"\u3400-\u9fff\uf900-\ufaffA-Za-z0-9"
-    punctuation = r"，。；：！？、（）【】《》「」『』“”‘’％·…—～"
+    punctuation = r"，。；：！？、（）【】《》「」『』“”‘’％·/…—～"
     pattern_a = re.compile(rf"(?<=[{boundary}])\s+(?=[{boundary}{punctuation}])")
     pattern_b = re.compile(rf"(?<=[{boundary}{punctuation}])\s+(?=[{boundary}])")
 
@@ -1517,9 +1561,6 @@ def _shape_text(obj: dict, fit: dict, page_w: float, page_h: float, tune_width: 
 
     # 1. Font size from the first line's glyph height.
     scale_h = fit["scale_h"]
-    if fit.get("spacing_remove") and _remove_cjk_latin_spaces(obj, fit.get("spacing_spans")):
-        fit["spacing_removed"] = True
-        return True
     if fit.get("suspect") == "measurement":
         return False
     if abs(scale_h - 1) > SIZE_TOLERANCE:
@@ -1534,6 +1575,16 @@ def _shape_text(obj: dict, fit: dict, page_w: float, page_h: float, tune_width: 
             fit["clamped"] = True
         if changed:
             return True
+
+    # Whitespace is a second-pass correction.  In particular, never remove a
+    # space in the same round that changes font size.
+    if (
+        fit.get("spacing_remove")
+        and abs(scale_h - 1) <= 2 * SIZE_TOLERANCE
+        and _remove_cjk_latin_spaces(obj, fit.get("spacing_spans"))
+    ):
+        fit["spacing_removed"] = True
+        return True
 
     # 1b. Stroke weight.
     if fit.get("weight_fix") == "bold":
@@ -1562,7 +1613,11 @@ def _shape_text(obj: dict, fit: dict, page_w: float, page_h: float, tune_width: 
     src_w, ren_w = fit["source_width"], fit["render_width"]
     n_chars = len(text.split("\n")[0])
     if tune_width and fit.get("width_comparable") and n_chars > 1 and abs(src_w - ren_w) > max(2 * tol, WIDTH_TOLERANCE * src_w):
-        if src_w < ren_w and _remove_cjk_latin_spaces(obj):
+        if (
+            src_w < ren_w
+            and abs(scale_h - 1) <= 2 * SIZE_TOLERANCE
+            and _remove_cjk_latin_spaces(obj, fit.get("spacing_spans"))
+        ):
             fit["spacing_removed"] = True
             return True
         scale_w = src_w / max(ren_w, 1)

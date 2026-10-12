@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -509,6 +510,79 @@ class ArrowTests(unittest.TestCase):
 
 
 class CJKLatinSpacingTests(unittest.TestCase):
+    def test_spacing_measurement_waits_for_size_alignment(self):
+        obj = {
+            "id": "t",
+            "type": "text",
+            "bbox": [40, 40, 260, 40],
+            "text": "中 A",
+            "style": {"font_size_pt": 18},
+        }
+        blank = np.full((160, 400, 3), 255, dtype=np.uint8)
+        lines = ([[40, 50, 120, 70]], [[40, 50, 120, 70]])
+        with mock.patch.object(object_fit, "_measure_lines", return_value=lines), mock.patch.object(
+            object_fit, "_needs_spacing_removal", return_value=[(1, 2)]
+        ) as needs:
+            fit = {}
+            object_fit.measure_text(obj, blank, blank, 400, 160, fit)
+        self.assertEqual(fit["scale_h"], 1.0)
+        needs.assert_called_once()
+
+        with mock.patch.object(object_fit, "_measure_lines", return_value=([[40, 50, 120, 70]], [[40, 50, 120, 60]])), mock.patch.object(
+            object_fit, "_needs_spacing_removal", return_value=[(1, 2)]
+        ) as needs:
+            fit = {}
+            object_fit.measure_text(obj, blank, blank, 400, 160, fit)
+        self.assertEqual(fit["scale_h"], 2.0)
+        needs.assert_not_called()
+        self.assertNotIn("spacing_remove", fit)
+
+    def test_spacing_uses_source_and_render_ems(self):
+        text = "中 A"
+        with mock.patch.object(object_fit, "_boundary_gap", side_effect=[6.0, 6.0]):
+            spans = object_fit._needs_spacing_removal(
+                text, None, None, None, None, None, source_em=20.0, render_em=10.0
+            )
+        # Equal pixel gaps are materially different after em normalization:
+        # 0.30em in the source versus 0.60em in the render.
+        self.assertEqual(spans, [(1, 2)])
+
+    def test_separator_spaces_are_kept_when_source_gap_is_real(self):
+        for text in ("中 · 文", "中 / 文"):
+            with mock.patch.object(object_fit, "_boundary_gap", side_effect=[5.0, 10.0, 5.0, 10.0]):
+                spans = object_fit._needs_spacing_removal(
+                    text, None, None, None, None, None, source_em=16.0, render_em=16.0
+                )
+            # Both boundaries touch the separator; 5px is 0.3125em, so
+            # neither intentional separator space is removed.
+            self.assertEqual(spans, [])
+
+    def test_size_correction_precedes_spacing_removal(self):
+        obj = {
+            "id": "t",
+            "type": "text",
+            "bbox": [100, 100, 200, 30],
+            "text": "中 A",
+            "style": {"font_size_pt": 13.0},
+        }
+        fit = {
+            "id": "t",
+            "status": "off",
+            "scale_h": 1.14,
+            "spacing_remove": True,
+            "spacing_spans": [(1, 2)],
+            "source_width": 180,
+            "render_width": 200,
+            "source_lines": 1,
+            "render_lines": 1,
+            "anchor_dx": 0.0,
+            "anchor_dy": 0.0,
+        }
+        object_fit.refine_page({"width_px": 800, "height_px": 600, "objects": [obj]}, [fit])
+        self.assertEqual(obj["style"]["font_size_pt"], 15.0)
+        self.assertEqual(obj["text"], "中 A")
+        self.assertNotIn("spacing_removed", fit)
+
     def test_ocr_to_pageir_gap_threshold(self):
         tokens = ["中文", "AI", "模型"]
         # Small gap (5 px < 0.33 * 20 = 6.6 px)
@@ -576,8 +650,8 @@ class CJKLatinSpacingTests(unittest.TestCase):
         old = {"id": "ratio-caption", "type": "text", "bbox": [10, 10, 200, 40], "style": {"font_size_pt": 24}}
         current = {"id": "ratio-caption", "type": "text", "bbox": [10, 10, 200, 40], "style": {"font_size_pt": 20}}
         payload = {"pages": [{"id": "slide-1", "objects": [current]}]}
-        pending = {"slide-1:ratio-caption": {"object": old, "fit": {"status": "off", "scale_h": 1.25, "anchor_dx": 0}}}
-        now = {"id": "ratio-caption", "status": "off", "scale_h": 1.05, "anchor_dx": 8.0}
+        pending = {"slide-1:ratio-caption": {"object": old, "fit": {"status": "off", "scale_h": 1.02, "anchor_dx": 0}}}
+        now = {"id": "ratio-caption", "status": "off", "scale_h": 1.01, "anchor_dx": 8.0}
         rolled, frozen, limits = fidelity_loop.apply_rollbacks(
             payload, [{"slide": 1, "object_fit": {"objects": [now]}}], pending, {}, set()
         )
