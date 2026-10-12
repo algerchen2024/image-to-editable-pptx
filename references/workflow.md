@@ -22,9 +22,9 @@ Use PowerPoint shapes for rectangles, rounded cards, borders, arrows, connectors
 
 Use a cropped/transparent image only when the visual cannot be represented reliably with simple geometry. `scripts/crop_asset.py` crops with the same source-pixel bbox used in PageIR, optionally turning the near-white surround transparent (`--white-to-alpha 245`), and prints the matching image object. Ensure the asset does not contain neighboring text, separators, or unrelated structure.
 
-## 5b. Measure shapes instead of estimating them
+## 5b. Extract icons and measure shapes instead of estimating them
 
-Run `scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json` after the OCR draft. It adds flat panels, bordered cards, circles and horizontal/vertical rules with measured geometry, colors, stroke widths and corner radii. Glyph strokes inside text boxes are ignored. Add arrows, diagonal connectors, dashed borders, gradients and icons yourself.
+Run `scripts/extract_assets.py source.png --merge page_ir.json --out page_ir.json --assets-dir assets` after the OCR draft, then run `scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json`. Icon extraction subtracts text and existing image objects, while shape borders contribute only their outline; therefore the two commands may be run in either order when a PageIR already contains cards. `detect_shapes.py` adds flat panels, bordered cards, circles and horizontal/vertical rules with measured geometry, colors, stroke widths and corner radii. Glyph strokes inside text boxes are ignored. Add arrows, diagonal connectors, dashed borders and gradients yourself.
 
 ## 6. Compile from PageIR
 

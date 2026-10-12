@@ -65,8 +65,6 @@ PLATFORM_FONTS = {
         "Microsoft YaHei", "Microsoft YaHei UI", "DengXian", "SimHei", "SimSun", "NSimSun", "KaiTi", "FangSong",
         "Microsoft JhengHei", "Arial", "Arial Black", "Arial Narrow", "Segoe UI", "Times New Roman", "Georgia",
         "Verdana", "Tahoma", "Trebuchet MS", "Courier New", "Impact", "Bahnschrift",
-        # Chinese fonts installed with Microsoft Office on Windows.
-        "STKaiti", "STSong", "STFangsong", "STXihei", "STZhongsong",
     },
 }
 # Installed with Microsoft Office on both platforms.
@@ -75,6 +73,7 @@ OFFICE_FONTS = {"Calibri", "Calibri Light", "Cambria", "Candara", "Consolas", "C
 DEFAULT_FONTS = {
     "mac": {"cjk": "PingFang SC", "latin": "Helvetica Neue"},
     "windows": {"cjk": "Microsoft YaHei", "latin": "Arial"},
+    "any": {"cjk": "+mn-ea", "latin": "+mn-lt"},
 }
 
 # Candidate fonts per typeface style, best first. "sans" is 黑体 (Hei), "kai" 楷体,
@@ -82,19 +81,27 @@ DEFAULT_FONTS = {
 FONT_STYLES = {
     "mac": {
         "sans": ["PingFang SC", "Hiragino Sans GB", "Heiti SC"],
-        "kai": ["Kaiti SC", "STKaiti"],
-        "song": ["Songti SC", "STSong"],
+        "kai": ["Kaiti SC"],
+        "song": ["Songti SC"],
         "fangsong": ["STFangsong"],
         "latin_sans": ["Helvetica Neue", "Arial"],
         "latin_serif": ["Times New Roman", "Georgia"],
     },
     "windows": {
         "sans": ["Microsoft YaHei", "DengXian", "SimHei"],
-        "kai": ["KaiTi", "STKaiti"],
-        "song": ["SimSun", "STSong"],
-        "fangsong": ["FangSong", "STFangsong"],
+        "kai": ["KaiTi"],
+        "song": ["SimSun"],
+        "fangsong": ["FangSong"],
         "latin_sans": ["Arial", "Segoe UI"],
         "latin_serif": ["Times New Roman", "Georgia"],
+    },
+    "any": {
+        "sans": ["+mn-ea"],
+        "kai": ["+mn-ea"],
+        "song": ["+mn-ea"],
+        "fangsong": ["+mn-ea"],
+        "latin_sans": ["+mn-lt"],
+        "latin_serif": ["+mn-lt"],
     },
 }
 FONT_STYLE_NAMES = ("sans", "kai", "song", "fangsong", "latin_sans", "latin_serif")
@@ -104,7 +111,7 @@ STYLE_KEYWORDS = [
     ("fangsong", ("fangsong", "仿宋")),
     ("kai", ("kai", "楷")),
     ("song", ("song", "ming", "宋", "明")),
-    ("sans", ("hei", "yahei", "pingfang", "sans", "黑", "苹方", "雅黑")),
+    ("sans", ("hei", "yahei", "pingfang", "sans", "黑", "苹方", "雅黑", "dengxian", "等线")),
 ]
 
 
@@ -124,27 +131,38 @@ def choose_font(
     preferences: dict | None = None,
     render_families: set[str] | None = None,
 ) -> tuple[str, bool]:
-    """Pick the font for a typeface style on the target machine.
+    """Pick a font using preference -> detected target -> bundled default -> neutral fallback.
 
     Returns (font, exact) where exact means the render environment has the same
-    font, so verification renders show what the user will see. Order:
-    1. the user's stated preference for this style;
-    2. a font of this style on the target machine (platform standard, or
-       user-installed and recognised by name) that the render environment also has;
-    3. the platform's first choice for the style (rendered with a substitute).
+    font, so verification renders show what the user will see. Selection order:
+    1. user preference for the style (`preferences[style]`);
+    2. font of that style detected on the target machine (`installed`, or
+       detected on the target when the render machine is the target) that
+       the render environment can also draw -> exact;
+    3. OS-bundled default for the target platform;
+    4. platform unknown -> 'any' (+mn-ea for CJK styles, +mn-lt for latin styles).
     """
-    platform = platform if platform in FONT_STYLES else "mac"
     render = {f.lower() for f in render_families or set()}
     preferences = preferences or {}
     if preferences.get(style):
         name = str(preferences[style])
         return name, name.lower() in render
+    platform = platform.lower() if platform else "any"
+    if platform not in FONT_STYLES:
+        platform = "any"
+    if platform == "any":
+        return ("+mn-lt" if style.startswith("latin_") else "+mn-ea"), True
+    installed_exact = sorted(
+        f for f in installed or set()
+        if infer_style(f) == style and f.lower() in render
+    )
+    if installed_exact:
+        return installed_exact[0], True
     candidates = list(FONT_STYLES[platform].get(style, FONT_STYLES[platform]["sans"]))
-    candidates += sorted(f for f in installed or set() if f not in candidates and infer_style(f) == style)
     for name in candidates:
         if name.lower() in render:
             return name, True
-    return candidates[0], False
+    return candidates[0] if candidates else DEFAULT_FONTS["any"]["cjk"], False
 
 
 RENDER_ONLY_FONT_RE = re.compile(
@@ -162,7 +180,9 @@ def target_preferences(payload: dict) -> dict:
 def target_of(payload: dict) -> tuple[str, set[str]]:
     """(platform, fonts the user has additionally installed) from PageIR `target`."""
     target = payload.get("target") or {}
-    platform = str(target.get("platform") or "any").lower()
+    # PageIR 1.0 omitted `target`; retain its historical mac default. An
+    # explicit target block without a platform is the neutral V5.4.1 mode.
+    platform = str(target.get("platform") or ("mac" if "target" not in payload else "any")).lower()
     installed = {str(f) for f in target.get("installed_fonts") or []}
     return platform, installed
 
@@ -170,8 +190,16 @@ def target_of(payload: dict) -> tuple[str, set[str]]:
 def font_issue(name: str, platform: str, installed: set[str]) -> tuple[str, str] | None:
     """('error'|'warning', message) when `name` will not exist on the user's machine."""
     lowered = {f.lower() for f in installed}
+    if is_theme_font(name):
+        return None
     if name.lower() in lowered:
         return None
+    if platform == "any" and not is_latin_font(name):
+        return (
+            "error",
+            f"font_face '{name}' is a concrete CJK font in any mode; use '+mn-ea' (or '+mj-ea' for titles), "
+            "or list the user's installed font explicitly.",
+        )
     if RENDER_ONLY_FONT_RE.match(name):
         suggestion = DEFAULT_FONTS.get(platform, DEFAULT_FONTS["mac"])
         return (
@@ -199,7 +227,38 @@ def page_ir_font_names(payload: dict) -> set[str]:
             style = obj.get("style") or {}
             if isinstance(style, dict) and style.get("font_face"):
                 names.add(str(style["font_face"]))
+            if isinstance(style, dict) and style.get("latin_font_face"):
+                names.add(str(style["latin_font_face"]))
             for run in obj.get("runs") or []:
                 if isinstance(run, dict) and run.get("font_face"):
                     names.add(str(run["font_face"]))
+                if isinstance(run, dict) and run.get("latin_font_face"):
+                    names.add(str(run["latin_font_face"]))
     return names
+
+
+LATIN_FONTS = {
+    "arial", "arial black", "arial narrow", "helvetica", "helvetica neue", "liberation sans",
+    "arimo", "calibri", "carlito", "segoe ui", "times new roman", "georgia", "liberation serif",
+    "tinos", "courier new", "liberation mono", "cousine",
+}
+
+
+def is_theme_font(name: object) -> bool:
+    return isinstance(name, str) and name in {"+mn-ea", "+mj-ea", "+mn-lt", "+mj-lt"}
+
+
+def is_latin_font(name: object) -> bool:
+    return isinstance(name, str) and name.lower() in LATIN_FONTS
+
+
+def latin_font_for(style: dict, platform: str, cjk_face: str) -> str:
+    """Resolve the Latin slot while preserving backwards compatibility."""
+    explicit = style.get("latin_font_face")
+    if explicit:
+        return str(explicit)
+    if is_latin_font(cjk_face) or (is_theme_font(cjk_face) and cjk_face.endswith("-lt")):
+        return cjk_face
+    if is_theme_font(cjk_face) and cjk_face.startswith("+mj-"):
+        return "+mj-lt"
+    return DEFAULT_FONTS.get(platform, DEFAULT_FONTS["any"])["latin"]

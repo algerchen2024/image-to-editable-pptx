@@ -136,17 +136,18 @@ python3 scripts/runtime_check.py --ocr-lang chi_sim+eng
 
 ```bash
 python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
-node scripts/compile_page_ir.js examples/minimal/page_ir.json example.pptx
+python3 scripts/compile_page_ir.py examples/minimal/page_ir.json example.pptx
 ```
 
 辅助编写 PageIR 的工具：
 
 ```bash
 python3 scripts/ocr_lines.py source.png --lang chi_sim+eng --out analysis/ocr_lines.json
-python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target mac --out page_ir.json   # 生成文本对象草稿
+python3 scripts/ocr_to_pageir.py analysis/ocr_lines.json --image source.png --target any --out page_ir.json   # 生成文本对象草稿
 python3 scripts/sample_colors.py source.png --bbox 100 220 360 180                               # 实测颜色
 python3 scripts/crop_asset.py source.png --bbox 1200 160 210 210 --out assets/logo.png --white-to-alpha 245
 python3 scripts/install_fonts.py fonts/                                                          # 可选：用与交付一致的字体渲染
+python3 scripts/extract_assets.py source.png --merge page_ir.json --out page_ir.json            # 图标裁成图片素材
 python3 scripts/detect_shapes.py source.png --merge page_ir.json --out page_ir.json             # 实测面板、边框、分隔线
 python3 scripts/fidelity_loop.py page_ir.json source.png --out output.pptx --workdir quality    # 编译、比对、自动校正
 python3 scripts/delivery_gate.py quality                                                         # 每页评级：HIGH / CLOSE / FAIL
@@ -157,7 +158,9 @@ python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out de
 
 `fidelity_loop.py` 会编译 PageIR、渲染、把每个对象与原图逐一测量比对（形状按四条边，文字逐行），并自动校正位置、尺寸、字号、换行、行距和字间距，直到对象误差在 2 像素以内。图像工具只依赖 numpy 和 Pillow，不需要 OpenCV。
 
-字体按打开 PPTX 的电脑来选：`--target mac` 默认用苹方（PingFang SC）和 Helvetica Neue，`windows` 默认用微软雅黑和 Arial。渲染环境专用的字体（如 Noto Sans CJK）会被校验拦截，除非用户的电脑上也装了。
+字体按打开 PPTX 的电脑来选：只有用户明确说 Mac 或 Windows 时才使用对应平台；否则使用 `any`，写入 `+mn-ea` / `+mn-lt` 主题引用，并在报告中注明打开电脑可能造成行宽 ±3%。
+
+文字的 `font_face` 写入东亚字体槽，`latin_font_face` 写入西文字体槽。箭头可用 `head_w` / `head_len` 指定 `sm`、`med`、`lg`；超宽箭头使用 `head_size_px`。
 
 ## PageIR
 
@@ -177,7 +180,7 @@ python3 scripts/assemble_deck.py work/slide-*/quality/page_ir.best.json --out de
 python3 scripts/validate_skill.py .
 python3 -m unittest discover -s tests -v
 python3 scripts/validate_page_ir.py examples/minimal/page_ir.json
-node scripts/compile_page_ir.js examples/minimal/page_ir.json /tmp/example.pptx
+python3 scripts/compile_page_ir.py examples/minimal/page_ir.json /tmp/example.pptx
 python3 scripts/inspect_pptx.py /tmp/example.pptx
 ```
 

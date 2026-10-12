@@ -12,11 +12,11 @@ import yaml
 
 
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-DISPLAY_VERSION_RE = re.compile(r"\bV(\d+)(?:\.(\d+))?$")
+DISPLAY_VERSION_RE = re.compile(r"\bV(\d+)(?:\.(\d+))?(?:\.(\d+))?$")
 
 
 def check_display_version(root: Path, display: str) -> list[str]:
-    """The V<major>[.<minor>] suffix users see in ChatGPT must match package.json."""
+    """The V<major>[.<minor>[.<patch>]] suffix users see in ChatGPT must match package.json."""
     package = root / "package.json"
     if not package.exists():
         return []
@@ -24,12 +24,15 @@ def check_display_version(root: Path, display: str) -> list[str]:
     parts = version.split(".")
     major = parts[0]
     minor = parts[1] if len(parts) > 1 else "0"
+    patch = parts[2] if len(parts) > 2 else "0"
     expected = f"V{major}" if minor == "0" else f"V{major}.{minor}"
     match = DISPLAY_VERSION_RE.search(display.strip())
     if not match:
         return [f"agents/openai.yaml display_name must end with {expected} to match package.json {version}"]
     shown_minor = match.group(2) or "0"
-    if match.group(1) != major or shown_minor != minor:
+    # A patch suffix is optional, but must be the real patch when shown (V5.4.1).
+    shown_patch = match.group(3)
+    if match.group(1) != major or shown_minor != minor or (shown_patch is not None and shown_patch != patch):
         return [f"display_name says {match.group(0)} but package.json version {version} needs {expected}"]
     return []
 
@@ -78,7 +81,9 @@ def validate(root: Path) -> list[str]:
                 errors.extend(check_display_version(root, display))
     for relative in [
         "scripts/validate_page_ir.py",
-        "scripts/compile_page_ir.js",
+        "scripts/compile_page_ir.py",
+        "scripts/fidelity_loop.py",
+        "scripts/delivery_gate.py",
         "references/pageir-schema.md",
         "references/quality-checks.md",
     ]:

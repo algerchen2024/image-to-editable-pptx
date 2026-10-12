@@ -7,11 +7,9 @@ user's PowerPoint will use. Install that font here first:
     install_fonts.py uploads/SourceHanSansSC-Bold.otf uploads/SourceHanSansSC-Heavy.otf
     install_fonts.py uploads/fonts/            # every .ttf/.otf/.ttc in a folder
 
-Only install fonts you are licensed to use this way. Open-licensed families that
-also install on macOS and Windows (Source Han Sans / 思源黑体, Noto Sans CJK,
-HarmonyOS Sans, Alibaba PuHuiTi) are the safe choice for exact 1:1 work. Apple
-system fonts such as PingFang are licensed for Apple devices only; do not copy
-them into a Linux sandbox.
+Only install font files the user supplied and is licensed to use in the render
+environment. This helper never selects or downloads fonts; it only makes a
+user-provided render copy available for verification.
 """
 
 from __future__ import annotations

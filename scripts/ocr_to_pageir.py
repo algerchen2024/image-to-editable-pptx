@@ -22,6 +22,7 @@ from pageir_common import DEFAULT_FONTS, FONT_STYLE_NAMES, pt_per_px  # noqa: E4
 
 
 CJK_RE = re.compile(r"[　-〿㐀-䶿一-鿿豈-﫿＀-￯]")
+LATIN_RE = re.compile(r"[A-Za-z0-9]")
 TALL_RE = re.compile(r"[A-Z0-9bdfhiklt()\[\]{}|/\\!?%&#@$]")
 DESCENDER_RE = re.compile(r"[gjpqy,;()\[\]{}|]")
 LOW_CONFIDENCE = 70.0
@@ -42,8 +43,46 @@ def estimate_font_pt(text: str, ink_height_px: float, page_w: float, page_h: flo
     return max(6.0, round(em_px * pt_per_px(page_w, page_h) * 2) / 2)
 
 
+def join_tokens_measured(tokens: list[str], boxes: list[list[float]] | None, em_px: float) -> str:
+    """Keep a CJK/Latin boundary space only when the measured gap is >= .33em."""
+    if not tokens:
+        return ""
+    result = str(tokens[0]).strip()
+    for i, raw in enumerate(tokens[1:], start=1):
+        token = str(raw).strip()
+        if not token:
+            continue
+        left, right = result[-1:], token[:1]
+        gap = None
+        if boxes and i < len(boxes) and i - 1 < len(boxes):
+            prev, cur = boxes[i - 1], boxes[i]
+            gap = float(cur[0]) - float(prev[0]) - float(prev[2])
+        boundary = (CJK_RE.search(left) and LATIN_RE.search(right)) or (LATIN_RE.search(left) and CJK_RE.search(right))
+        if boundary:
+            if gap is not None and gap >= 0.33 * em_px:
+                result += " "
+            result += token
+        elif CJK_RE.search(left) and CJK_RE.search(right):
+            result += token
+        elif token[0] in ",.;:!?%)]}，。；：！？％）】》" or result[-1:] in "([{（【《":
+            result += token
+        else:
+            result += " " + token
+    return result
+
+
+def normalized_ocr_text(line: dict, page_w: float, page_h: float) -> str:
+    tokens = line.get("tokens")
+    boxes = line.get("word_boxes") or line.get("boxes")
+    if not isinstance(tokens, list) or not isinstance(boxes, list):
+        return str(line.get("text", ""))
+    h = float((line.get("bbox") or [0, 0, 0, 20])[3] or 20)
+    em_px = h / max(ink_to_em_ratio(str(line.get("text", ""))), 0.1)
+    return join_tokens_measured(tokens, boxes, em_px)
+
+
 def draft_text_object(line: dict, index: int, page_w: float, page_h: float, fonts: dict, image=None) -> dict:
-    text = line["text"]
+    text = normalized_ocr_text(line, page_w, page_h)
     x, y, w, h = (float(v) for v in line["bbox"])
     font_pt = estimate_font_pt(text, h, page_w, page_h)
     em_px = font_pt / pt_per_px(page_w, page_h)
@@ -88,14 +127,17 @@ def build_page_ir(
     fonts: dict,
     image=None,
     background: str | None = None,
-    platform: str = "mac",
+    platform: str = "any",
     installed: list[str] | None = None,
     preferences: dict | None = None,
 ) -> dict:
+    cjk_face = "+mn-ea" if platform == "any" else fonts["cjk"]
+    latin_face = "+mn-lt" if platform == "any" else fonts["latin"]
     page_w = float(ocr["width_px"])
     page_h = float(ocr["height_px"])
+    selected_fonts = {"cjk": cjk_face, "latin": latin_face}
     objects = [
-        draft_text_object(line, index, page_w, page_h, fonts, image)
+        draft_text_object(line, index, page_w, page_h, selected_fonts, image)
         for index, line in enumerate(ocr.get("lines", []), start=1)
         if str(line.get("text", "")).strip()
     ]
@@ -110,7 +152,7 @@ def build_page_ir(
             "installed_fonts": sorted(installed or []),
             **({"font_preferences": preferences} if preferences else {}),
         },
-        "default_font_face": fonts["latin"],
+        "default_font_face": latin_face,
         "pages": [
             {
                 "id": "slide-1",
@@ -131,8 +173,8 @@ def main() -> int:
     parser.add_argument(
         "--target",
         choices=sorted(DEFAULT_FONTS),
-        default="mac",
-        help="platform the PPTX will be opened on; picks fonts that exist there (default: mac)",
+        default="any",
+        help="platform the PPTX will be opened on; picks fonts that exist there (default: any)",
     )
     parser.add_argument(
         "--installed-fonts",

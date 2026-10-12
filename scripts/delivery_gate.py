@@ -116,6 +116,9 @@ def check_slide(workdir: Path, min_fit: float) -> dict:
         row["issues"] += [f"render: {p}" for p in metrics.get("problems", [])]
         row["object_fit_ratio"] = metrics.get("object_fit_ratio")
         row["edge_f1"] = [round(s["edge_f1"], 3) for s in metrics.get("slides", [])]
+        row["width_unverified"] = [
+            i for s in metrics.get("slides", []) for i in s.get("object_fit", {}).get("width_unverified", [])
+        ]
         row["objects_off"] = [
             f["id"]
             for s in metrics.get("slides", [])
@@ -124,6 +127,10 @@ def check_slide(workdir: Path, min_fit: float) -> dict:
         ]
         exact = [s for s in (metrics.get("fonts") or {}).get("substitutions", []) if not s.get("substituted")]
         row["exact_fonts"] = [s["requested"] for s in exact]
+        target_platform = ((json.loads(best_ir.read_text(encoding="utf-8")).get("target") or {}).get("platform")
+                           if best_ir.exists() else None)
+        if target_platform == "any" or row["width_unverified"]:
+            row.setdefault("notes", []).append("字体由打开的电脑决定/替代字体校验，行宽可能 ±3%")
 
     sources = summary.get("sources") or []
     if best_ir.exists() and sources:
@@ -189,6 +196,8 @@ def main() -> int:
             issues = list(r["issues"])
             if r.get("missing_regions"):
                 issues.append(f"content not in PageIR at {r['missing_regions']}")
+            if r.get("notes"):
+                issues.extend(r["notes"])
             print(
                 f"| {i} | {r['level']} | {fit if fit is not None else '-'} | {r.get('uncovered_ink', '-')} | "
                 f"{r.get('edge_f1', '-')} | {r.get('rounds', 0)} | {', '.join(r.get('objects_off', [])[:6]) or '-'} | "
@@ -202,6 +211,12 @@ def main() -> int:
             print(f"Do not deliver slides {failed}: finish their pipeline first.")
         if close:
             print(f"Slides {close} are close reconstructions, not 1:1; say so and list their objects_off.")
+        unverified = sum(len(r.get("width_unverified", [])) for r in rows)
+        if unverified:
+            print(
+                f"{unverified} text object(s) were checked with a substitute font: size and position are verified, "
+                "line widths are not. Say so in the report; render with the user's real font for a full check."
+            )
     return 0 if all(r["level"] != "FAIL" for r in rows) else 2
 
 

@@ -1,5 +1,7 @@
 numpy>=1.24
 pillow>=10
 python-pptx>=1.0
+# OCR path requires pytesseract plus the matching tesseract language packs.
 pytesseract>=0.3.10
 PyYAML>=6
+lxml>=4.9

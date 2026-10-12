@@ -106,8 +106,17 @@ class ObjectFitTests(unittest.TestCase):
         self.assertAlmostEqual(fit["scale_h"], 0.8)
         page = {"width_px": 1600, "height_px": 900, "objects": [obj]}
         object_fit.refine_page(page, [fit])
-        self.assertEqual(obj["style"]["font_size_pt"], 17.5)
+        # V5.4.1 caps one-round font changes at -13%; the uncapped 0.8
+        # correction would be 17.5 pt, so the safe result is 19 pt.
+        self.assertEqual(obj["style"]["font_size_pt"], 19.0)
         self.assertLess(obj["bbox"][0], 104)  # also moved left onto the source anchor
+
+    def test_subpoint_font_change_takes_one_half_point(self):
+        obj = {"id": "y-60", "type": "text", "bbox": [0, 0, 40, 20], "text": "60", "style": {"font_size_pt": 12.5}}
+        # 6.7% is under a point, so the snap must not jump a whole point to 11.5.
+        changed, _clamped = object_fit._scale_fonts(obj, 0.933)
+        self.assertTrue(changed)
+        self.assertEqual(obj["style"]["font_size_pt"], 12.0)
 
     def test_wrap_detected_for_single_line(self):
         src, d = canvas()
@@ -226,6 +235,50 @@ if __name__ == "__main__":
 
 
 class WeightAndLineTests(unittest.TestCase):
+    def test_single_line_fragments_do_not_duplicate_or_stretch_glyphs(self):
+        obj = {
+            "id": "sub", "type": "text", "bbox": [52, 88, 800, 36],
+            "text": "合规 · 办公",
+            "style": {"font_size_pt": 15, "color": "#333333", "wrap": False},
+        }
+        title = {
+            "id": "title", "type": "text", "bbox": [48, 10, 960, 80],
+            "style": {"font_size_pt": 40, "color": "#1F2A44"},
+        }
+        head = {
+            "id": "head", "type": "rect", "bbox": [24, 146, 300, 78],
+            "style": {"fill": "#2E8B57"},
+        }
+        images = []
+        for top in (93, 95):
+            image, d = canvas(1672, 941)
+            # A detached descender just below the title bbox. The old color
+            # merger attaches it across a 1px gap to the later left glyph,
+            # leaving a second, overlapping line from the earlier right glyph.
+            d.rectangle([56, 91, 59, top - 1], fill=(51, 51, 51))
+            d.rectangle([80, top, 95, top + 23], fill=(51, 51, 51))
+            d.rectangle([56, top + 1, 65, top + 23], fill=(51, 51, 51))
+            d.ellipse([120, top + 9, 123, top + 12], fill=(51, 51, 51))
+            d.rectangle([145, top, 160, top + 23], fill=(51, 51, 51))
+            d.rectangle([24, 146, 323, 223], fill=(46, 139, 87))
+            images.append(np.array(image))
+        lines = object_fit._measure_lines(obj, *images, 1672, 941, [title, obj, head])
+        self.assertEqual(lines, ([[56, 93, 161, 117]], [[56, 95, 161, 119]]))
+        fit = object_fit.measure_object(obj, *images, 1672, 941, objects=[title, obj, head])
+        self.assertEqual((fit["source_lines"], fit["render_lines"]), (1, 1))
+        self.assertEqual(fit["scale_h"], 1.0)
+        self.assertTrue(fit["width_comparable"])
+        self.assertIsNone(fit["pitch_ratio"])
+        for image, expected in zip(images, (lines[0], lines[1])):
+            self.assertEqual(image_ops.ink_lines(image, [30, 80, 900, 160], bg_region=[52, 88, 852, 124]), expected)
+
+    def test_own_lines_require_vertical_intersection(self):
+        obj = {"bbox": [50, 90, 200, 36], "text": "中文", "style": {"font_size_pt": 15, "wrap": False}}
+        outside = [[50, 82, 100, 90], [50, 126, 100, 130]]
+        self.assertEqual(object_fit._own_lines(outside, obj, 1672, 941), [])
+        self.assertEqual(object_fit._own_lines(outside + [[50, 94, 100, 118]], obj, 1672, 941),
+                         [[50, 94, 100, 118]])
+
     def outline_blocks(self, draw, x, y, w, glyph_h, stroke):
         for gx in range(x, x + w - 20, 34):
             draw.rectangle([gx, y, gx + 27, y + glyph_h - 1], outline=(17, 17, 17), width=stroke)
@@ -263,6 +316,76 @@ class WeightAndLineTests(unittest.TestCase):
         lines = image_ops.ink_lines(np.array(image), [100, 60, 520, 220], bg_region=[120, 110, 480, 166])
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0][1:4:2], [120, 156])
+
+
+    def test_substituted_font_uses_only_extreme_weight_evidence(self):
+        src, d = canvas()
+        self.outline_blocks(d, 100, 100, 600, 30, 6)
+        ren, d = canvas()
+        self.outline_blocks(d, 100, 100, 600, 30, 3)
+        obj = {
+            "id": "t",
+            "type": "text",
+            "bbox": [96, 95, 620, 40],
+            "text": "x" * 17,
+            "style": {"font_size_pt": 30, "font_face": "PingFang SC"},
+        }
+        fit = object_fit.measure_object(obj, np.array(src), np.array(ren), 1600, 900, substituted={"PingFang SC"})
+        self.assertGreaterEqual(fit["weight_ratio"], 1.35)
+        self.assertEqual(fit["weight_fix"], "bold")
+
+    def test_glyphs_under_16px_skip_weight(self):
+        src, draw = canvas()
+        self.outline_blocks(draw, 100, 100, 600, 10, 4)
+        ren, draw = canvas()
+        self.outline_blocks(draw, 100, 100, 600, 10, 1)
+        obj = {"id": "t", "type": "text", "bbox": [96, 96, 620, 20], "text": "x" * 17, "style": {"font_size_pt": 12}}
+        fit = object_fit.measure_object(obj, np.array(src), np.array(ren), 1600, 900)
+        self.assertLess(fit["first_line_source"][3] - fit["first_line_source"][1], 16)
+        self.assertIsNone(fit.get("weight_fix"))
+        self.assertNotIn("weight_ratio", fit)
+
+
+class GapClusterTests(unittest.TestCase):
+    def glyphs(self, draw, x, y, n, gw=10, gh=20, gap=4):
+        for i in range(n):
+            gx = x + i * (gw + gap)
+            draw.rectangle([gx, y, gx + gw - 1, y + gh - 1], fill=(17, 17, 17))
+        return n * gw + (n - 1) * gap
+
+    def test_middle_phrase_excludes_neighbours_1_5em_away(self):
+        # 960px-wide page: 20pt is about 20px, so 1.5em = 30px and 0.9em = 18px.
+        image, d = canvas(960, 540)
+        self.glyphs(d, 120, 80, 11)
+        self.glyphs(d, 300, 80, 11)
+        self.glyphs(d, 480, 80, 11)
+        obj = {
+            "id": "mid",
+            "type": "text",
+            "bbox": [300, 50, 150, 80],
+            "text": "中" * 11,
+            "style": {"font_size_pt": 20},
+        }
+        fit = object_fit.measure_object(obj, np.array(image), np.array(image), 960, 540)
+        self.assertLess(fit["source_width"], 180)
+        self.assertGreater(fit["first_line_source"][0], 290)
+        self.assertLess(fit["first_line_source"][2], 460)
+
+    def test_text_mask_expands_other_text_by_0_3_em(self):
+        obj = {"id": "a", "type": "text", "bbox": [100, 100, 80, 30], "style": {"font_size_pt": 20}}
+        other = {"id": "b", "type": "text", "bbox": [300, 100, 40, 20], "style": {"font_size_pt": 20}}
+        mask = object_fit._measurement_mask(obj, [obj, other], [0, 0, 960, 540], 960, 540)
+        em = object_fit._em_px(other, 960, 540)
+        self.assertTrue(mask[110, int(300 - 0.15 * em)])
+        self.assertFalse(mask[110, int(300 - 0.8 * em)])
+
+    def test_icon_base_above_box_is_not_the_first_line(self):
+        obj = {"id": "t", "type": "text", "bbox": [100, 100, 80, 30], "style": {"font_size_pt": 20}}
+        # Centre is 0.6em above the box: inside the old fallback, outside the 0.5em band.
+        icon = [100, 80, 140, 88]
+        text = [100, 104, 180, 124]
+        kept = object_fit._lines_in_vertical_band([icon, text], obj, 960, 540)
+        self.assertEqual(kept, [text])
 
 
 class FontProfileTests(unittest.TestCase):
@@ -358,3 +481,47 @@ class BatchToolTests(unittest.TestCase):
             c = write(tmp / "s3", 900, 1600)
             with self.assertRaises(ValueError):
                 assemble_deck.assemble([a, c])
+
+
+class InfographicSegmentationTests(unittest.TestCase):
+    """Cards with 1 px light borders and line icons, a bar chart on axes (an AI-generated promo slide)."""
+
+    def build(self):
+        image, d = canvas(1672, 941)
+        for x in (60, 457, 852, 1249):
+            d.rounded_rectangle([x, 233, x + 364, 527], radius=12, outline=(222, 222, 222), width=1, fill=(255, 255, 255))
+            # A line icon: frame, inner glyph-like bars, and a stand.
+            d.rounded_rectangle([x + 120, 265, x + 240, 345], radius=6, outline=(240, 90, 40), width=5)
+            d.rectangle([x + 150, 290, x + 210, 300], fill=(240, 90, 40))
+            d.rectangle([x + 150, 312, x + 190, 322], fill=(240, 90, 40))
+            d.rectangle([x + 170, 355, x + 190, 372], fill=(240, 90, 40))
+        d.line([117, 622, 117, 809], fill=(170, 170, 170), width=2)
+        d.line([117, 809, 906, 809], fill=(170, 170, 170), width=2)
+        d.rectangle([178, 747, 304, 808], fill=(204, 204, 206))
+        d.rectangle([706, 640, 837, 808], fill=(240, 90, 40))
+        return image
+
+    def test_icons_become_assets_and_structure_becomes_shapes(self):
+        import extract_assets
+
+        image = np.array(self.build())
+        page = {"width_px": 1672, "height_px": 941, "objects": []}
+        assets = extract_assets.find_assets(image, page)
+        self.assertEqual(len(assets), 4)
+        for (x, y, w, h), card_x in zip(sorted(assets), (60, 457, 852, 1249)):
+            self.assertAlmostEqual(x, card_x + 118, delta=4)  # the whole icon, frame included
+            self.assertGreater(h, 100)  # frame + stand in one asset
+        page["objects"] = [{"id": f"a{i}", "type": "image", "bbox": b} for i, b in enumerate(assets)]
+        shapes = detect_shapes.detect(image, [o["bbox"] for o in page["objects"]])
+        cards = [o for o in shapes if o["type"] == "round_rect"]
+        self.assertEqual(len(cards), 4)
+        for card in cards:
+            self.assertAlmostEqual(card["bbox"][2], 365, delta=4)
+            self.assertEqual(card["style"]["line"][:3], "#DE")
+        bars = sorted((o for o in shapes if o["type"] == "rect"), key=lambda o: o["bbox"][0])
+        self.assertEqual([round(b["bbox"][0]) for b in bars], [178, 706])
+        lines = [o for o in shapes if o["type"] == "line"]
+        self.assertEqual(len(lines), 2)  # y axis, and the x axis joined across the bars
+        x_axis = max(lines, key=lambda o: abs(o["points"][2] - o["points"][0]))
+        self.assertLess(x_axis["points"][0], 125)
+        self.assertGreater(x_axis["points"][2], 895)

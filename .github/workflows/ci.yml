@@ -32,10 +32,11 @@ jobs:
         run: |
           python scripts/validate_page_ir.py examples/minimal/page_ir.json
           python scripts/validate_page_ir.py examples/features/page_ir.json
-      - name: Compile example PPTX
+      - name: Compile example PPTX (Python compiler, and the optional Node one)
         run: |
-          node scripts/compile_page_ir.js examples/minimal/page_ir.json /tmp/example.pptx
-          node scripts/compile_page_ir.js examples/features/page_ir.json /tmp/features.pptx
+          python scripts/compile_page_ir.py examples/minimal/page_ir.json /tmp/example.pptx
+          python scripts/compile_page_ir.py examples/features/page_ir.json /tmp/features.pptx
+          node scripts/compile_page_ir.js examples/features/page_ir.json /tmp/features-node.pptx
       - name: Inspect compiled PPTX
         run: |
           python scripts/inspect_pptx.py /tmp/example.pptx

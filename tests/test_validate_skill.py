@@ -30,6 +30,11 @@ class DisplayVersionTests(unittest.TestCase):
         self.assertTrue(self.check("5.1.0", "GPT Image to Editable PPTX V5"))
         self.assertTrue(self.check("5.2.0", "GPT Image to Editable PPTX V5.1"))
 
+    def test_patch_may_be_shown_but_must_match(self):
+        self.assertEqual(self.check("5.4.1", "GPT Image to Editable PPTX V5.4.1"), [])
+        self.assertEqual(self.check("5.4.1", "GPT Image to Editable PPTX V5.4"), [])
+        self.assertTrue(self.check("5.4.1", "GPT Image to Editable PPTX V5.4.2"))
+
     def test_mismatched_major_fails(self):
         self.assertTrue(self.check("6.0.0", "GPT Image to Editable PPTX V5"))
 
