@@ -130,7 +130,8 @@ class FidelityLoopTests(unittest.TestCase):
                 [sys.executable, str(SCRIPTS / "delivery_gate.py"), str(tmp / "q"), "--json"], capture_output=True, text=True
             )
             self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
-            self.assertEqual(json.loads(gate.stdout)[0]["level"], "HIGH")
+            off = {k: v for k, v in fits.items() if v.get("status") != "ok"}
+            self.assertEqual(json.loads(gate.stdout)[0]["level"], "HIGH", gate.stdout + json.dumps(off, ensure_ascii=False))
 
 
 if __name__ == "__main__":
