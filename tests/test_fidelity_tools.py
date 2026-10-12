@@ -235,6 +235,50 @@ if __name__ == "__main__":
 
 
 class WeightAndLineTests(unittest.TestCase):
+    def test_single_line_fragments_do_not_duplicate_or_stretch_glyphs(self):
+        obj = {
+            "id": "sub", "type": "text", "bbox": [52, 88, 800, 36],
+            "text": "合规 · 办公",
+            "style": {"font_size_pt": 15, "color": "#333333", "wrap": False},
+        }
+        title = {
+            "id": "title", "type": "text", "bbox": [48, 10, 960, 80],
+            "style": {"font_size_pt": 40, "color": "#1F2A44"},
+        }
+        head = {
+            "id": "head", "type": "rect", "bbox": [24, 146, 300, 78],
+            "style": {"fill": "#2E8B57"},
+        }
+        images = []
+        for top in (93, 95):
+            image, d = canvas(1672, 941)
+            # A detached descender just below the title bbox. The old color
+            # merger attaches it across a 1px gap to the later left glyph,
+            # leaving a second, overlapping line from the earlier right glyph.
+            d.rectangle([56, 91, 59, top - 1], fill=(51, 51, 51))
+            d.rectangle([80, top, 95, top + 23], fill=(51, 51, 51))
+            d.rectangle([56, top + 1, 65, top + 23], fill=(51, 51, 51))
+            d.ellipse([120, top + 9, 123, top + 12], fill=(51, 51, 51))
+            d.rectangle([145, top, 160, top + 23], fill=(51, 51, 51))
+            d.rectangle([24, 146, 323, 223], fill=(46, 139, 87))
+            images.append(np.array(image))
+        lines = object_fit._measure_lines(obj, *images, 1672, 941, [title, obj, head])
+        self.assertEqual(lines, ([[56, 93, 161, 117]], [[56, 95, 161, 119]]))
+        fit = object_fit.measure_object(obj, *images, 1672, 941, objects=[title, obj, head])
+        self.assertEqual((fit["source_lines"], fit["render_lines"]), (1, 1))
+        self.assertEqual(fit["scale_h"], 1.0)
+        self.assertTrue(fit["width_comparable"])
+        self.assertIsNone(fit["pitch_ratio"])
+        for image, expected in zip(images, (lines[0], lines[1])):
+            self.assertEqual(image_ops.ink_lines(image, [30, 80, 900, 160], bg_region=[52, 88, 852, 124]), expected)
+
+    def test_own_lines_require_vertical_intersection(self):
+        obj = {"bbox": [50, 90, 200, 36], "text": "中文", "style": {"font_size_pt": 15, "wrap": False}}
+        outside = [[50, 82, 100, 90], [50, 126, 100, 130]]
+        self.assertEqual(object_fit._own_lines(outside, obj, 1672, 941), [])
+        self.assertEqual(object_fit._own_lines(outside + [[50, 94, 100, 118]], obj, 1672, 941),
+                         [[50, 94, 100, 118]])
+
     def outline_blocks(self, draw, x, y, w, glyph_h, stroke):
         for gx in range(x, x + w - 20, 34):
             draw.rectangle([gx, y, gx + 27, y + glyph_h - 1], outline=(17, 17, 17), width=stroke)

@@ -726,16 +726,54 @@ def _measure_box(obj, source, rendered, page_w, page_h, objects=None):
 
 
 def _own_lines(lines, obj, page_w, page_h):
-    """Lines whose vertical centre lies within the text box (plus a little slack).
+    """Keep only lines that vertically intersect this object's text box.
 
-    Keeps a neighbouring paragraph that reaches into the search window from
-    being measured as part of this object. Falls back to every line when none
-    sit in the slack, so callers must still apply `_lines_in_vertical_band`.
+    For an explicit single-line, non-wrapping object, tiny detached fragments
+    are attached to the main line without stretching its height, and overlapping
+    runs are merged into a single logical line.
     """
-    x, y, w, h = (float(v) for v in obj["bbox"])
-    slack = 0.3 * _em_px(obj, page_w, page_h)
-    own = [b for b in lines if y - slack <= (b[1] + b[3]) / 2 <= y + h + slack]
-    return own or lines
+    _x, y, _w, h = (float(v) for v in obj["bbox"])
+    text = text_of(obj)
+    own = [list(b) for b in lines if b[3] > y and b[1] < y + h]
+    if not own:
+        return []
+    style = obj.get("style") or {}
+    if "\n" not in text and style.get("wrap", True) is False and len(own) > 1:
+        merged: list[list[int]] = []
+        for line in sorted(own, key=lambda b: b[1]):
+            for prior in merged:
+                overlap = min(line[3], prior[3]) - max(line[1], prior[1])
+                if overlap > 0.5 * min(line[3] - line[1], prior[3] - prior[1]):
+                    prior[0] = min(prior[0], line[0])
+                    prior[2] = max(prior[2], line[2])
+                    prior[1] = max(prior[1], line[1])
+                    prior[3] = min(prior[3], line[3])
+                    break
+            else:
+                merged.append(line)
+        own = merged
+        tallest = max(b[3] - b[1] for b in own)
+        main = [b for b in own if b[3] - b[1] >= 0.35 * tallest]
+        fragments = [b for b in own if b[3] - b[1] < 0.35 * tallest]
+        if main:
+            em = _em_px(obj, page_w, page_h)
+            combined = [
+                min(b[0] for b in main),
+                min(b[1] for b in main),
+                max(b[2] for b in main),
+                max(b[3] for b in main),
+            ]
+            for fragment in fragments:
+                gap = max(combined[1], fragment[1]) - min(combined[3], fragment[3])
+                h_near = (combined[0] - em <= fragment[2] and fragment[0] <= combined[2] + em)
+                if gap <= max(2.0, 0.25 * em) and h_near:
+                    combined[0] = min(combined[0], fragment[0])
+                    combined[2] = max(combined[2], fragment[2])
+            own = [combined]
+        else:
+            widest = max(own, key=lambda b: (b[2] - b[0]))
+            own = [widest]
+    return sorted(own, key=lambda b: b[1])
 
 
 def _lines_in_vertical_band(lines, obj, page_w, page_h):
@@ -847,7 +885,10 @@ def _needs_spacing_removal(
             continue
         left = text[: span[0]].rstrip()[-1:]
         right = text[span[1] :].lstrip()[:1]
-        if (left in separators or right in separators) and src_gap / source_em >= 0.25:
+        # Character-order projection can land inside a multi-component glyph
+        # or on the separator itself. PageIR's separator spaces are intentional
+        # and must never be inferred as removable.
+        if left in separators or right in separators:
             continue
         if src_gap / source_em < 0.6 * (ren_gap / render_em):
             removals.append(span)
@@ -1018,7 +1059,7 @@ def _drop_slivers(lines, obj, page_w, page_h):
 def _line_height_plausible(lines, obj, page_w, page_h) -> bool:
     if not lines:
         return False
-    height = lines[0][3] - lines[0][1]
+    height = max(b[3] - b[1] for b in lines)
     em = _em_px(obj, page_w, page_h)
     return 0.45 * em <= height <= 1.6 * em
 
